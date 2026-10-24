@@ -7,9 +7,11 @@ from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QDialog, QPushButton, QVBoxLayout
 
+from ..core import peek
 from ..core.util import format_hms_ms
 from .theme import set_kind
 from .widgets import Timeline, TrackPicker, card, hbox, label
+from .worker import Task
 
 try:        # same fallback as the Clips tab when Qt's multimedia DLLs are blocked
     from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -94,7 +96,29 @@ class PreviewDialog(QDialog):
         self.player.setSource(QUrl.fromLocalFile(str(path)))
         if info is not None:
             self.timeline.set_state(duration=info.duration, snaps=self.marks)
+        self._open = True
+        self._load_peek(main)
         QTimer.singleShot(0, self.toggle_play)
+
+    def _load_peek(self, main):
+        """Waveform and thumbnails on the timeline, as in the Clips tab. The look-ups belong to the
+        main window, which waits for them on quit; this window may be closed before they finish."""
+        info = self.info
+        if not main.settings.show_peek or info is None or not info.duration:
+            return
+        path = self.path
+        jobs = []
+        if info.audio:
+            jobs.append((lambda: peek.waveform(path), lambda w: self.timeline.set_peek(waveform=w)))
+        if info.has_video:
+            count = max(4, min(60, self.timeline.width() // 80))
+            jobs.append((lambda: peek.thumbnails(path, info.duration, count),
+                         lambda th: self.timeline.set_peek(thumbs=th)))
+        for work, show in jobs:
+            t = Task(work, parent=main)
+            t.done.connect(lambda r, show=show: self._open and show(r))
+            main.tasks.append(t)
+            t.start()
 
     def _dur(self, ms):
         self.timeline.set_state(duration=ms / 1000, snaps=self.marks)
@@ -136,6 +160,7 @@ class PreviewDialog(QDialog):
         self.player.setPosition(max(0, int(self.player.position() + seconds * 1000)))
 
     def closeEvent(self, e):
+        self._open = False
         self.closed.emit()
         self.player.stop()
         self.player.setSource(QUrl())       # release the file before deleting it

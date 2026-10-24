@@ -59,6 +59,12 @@ Drop in one clip or hundreds, either as files or whole folders. For each clip yo
   the default for every clip you open until you close Trimmer.
 - **Estimate** the output size before you start.
 
+The output options apply to every clip, unless a clip has its own: select one
+or more clips and change an option, and only those clips change. They get a
+★ in the list. **Use shared options** takes a clip's own options away again.
+With nothing selected (press Esc, click empty space in the list or **Deselect
+all**) the options are the ones for all clips, and new clips start from them.
+
 Lossless trims start at the nearest keyframe *before* your mark, so nothing
 you marked is lost. Tick "Frame-exact cuts" if you need the exact frame: it
 uses **smart cut**, which re-encodes only the frames between your mark and the
@@ -98,6 +104,12 @@ tracks, or mix them into one track so phones and Discord play every track.
 files (and/or a video-only file), one set per merged session, or one per trimmed
 clip when keeping them separate. You can untick **Save the merged video** to get
 only the rips.
+
+These options apply to every ticked session, unless a session has its own:
+select sessions and change an option, and only those sessions change (they get
+a ★). **Use shared options** takes them away again. With nothing selected
+(Esc, a click on empty space or **Deselect all**) the options are the ones for
+all sessions.
 
 Tick "Write an info file" to get a text file next to each output that lists
 every clip: where it sits in the result, which part of the original was used,

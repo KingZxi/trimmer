@@ -168,6 +168,8 @@ def test_prefill_default_track_and_merged_preview():
     d = dlgs[0]
     assert d.marks and len(d.marks) == 2                    # 3 kept clips -> 2 joins
     assert 47.0 < d.info.duration < 49.5
+    pump(20, lambda: d.timeline.wave and d.timeline.thumbs)
+    assert d.timeline.wave and d.timeline.thumbs            # waveform and frames, as in Clips
     tmp = d.temp_dir
     assert not (WORK / "out3").exists() or not any((WORK / "out3").iterdir())   # nothing saved
     d.close()
@@ -730,4 +732,201 @@ def test_merge_then_send_to_clips_and_failure():
     assert w.queue.items[-1].status != "done"
     pump(30, lambda: sum(len(s.clips) for s in m.sessions) == 4)
     assert sum(len(s.clips) for s in m.sessions) == 4 and len(w.clips.entries) == 1
+    w.close()
+
+
+def test_merge_per_session_options():
+    from PySide6.QtCore import QPoint
+    from PySide6.QtTest import QTest
+    fx.shared_replays(WORK / "po_rep")
+    w = window(WORK / "po_out")
+    w.queue.auto_start.setChecked(False)
+    m = w.merge
+    w.tabs.setCurrentWidget(m)
+    w._route([str(WORK / "po_rep")])
+    pump(30, lambda: m.sessions)
+    tree = m.tree
+    first, second = tree.topLevelItem(0), tree.topLevelItem(1)
+    s0, s1 = m.sessions
+    assert not tree.selectedItems() and m.g_opts.title() == "Options for all sessions"
+    assert not m.b_shared.isEnabled() and m.view.session is None
+
+    # a change with one session selected gives it its own options; the other keeps the shared ones
+    _select_rows(tree, [1])
+    assert m.g_opts.title() == f"Options for {s1.name}"
+    m.g_out.setChecked(False)
+    m.g_rip.setChecked(True)
+    m.rip_checks[0].setChecked(True)
+    assert first.text(0) == s0.name and second.text(0) == "★ " + s1.name
+    assert second.toolTip(0) == "Uses its own options" and m.b_shared.isEnabled()
+    assert m.shared["save_video"] and not m.shared["rip"]
+
+    # nothing selected: the shared options, and changes go to every session without its own
+    m.deselect_all()
+    assert not tree.selectedItems() and m.view.session is None
+    assert m.g_opts.title() == "Options for all sessions"
+    assert m.g_out.isChecked() and not m.g_rip.isChecked() and not m.rip_checks[0].isChecked()
+    m.compress.setChecked(True)
+    assert m.shared["compress"] and not m.custom[id(s1)]["compress"]
+    assert first.text(0) == s0.name
+
+    # its own merge mode changes only that session's default name
+    _select_rows(tree, [0])
+    m.r_trim.setChecked(True)
+    assert first.text(0).startswith("★ ") and first.text(3).endswith("(folder)")
+    assert m.shared["mode"] == "merge"
+    _select_rows(tree, [1])
+    assert not m.g_out.isChecked() and m.g_rip.isChecked() and m.r_merge.isChecked()
+
+    # Esc in the list and a click on its empty space clear the selection
+    tree.setFocus()
+    QTest.keyClick(tree, Qt.Key_Escape)
+    assert not tree.selectedItems() and tree.currentItem() is None
+    _select_rows(tree, [0])
+    w.resize(1280, 1100)                          # room below the rows, however small the screen is
+    tree.parentWidget().setSizes([300, 170])
+    pump(0.3)
+    vp, below = tree.viewport(), tree.visualItemRect(second).bottom() + 8
+    assert below < vp.height()
+    QTest.mouseClick(vp, Qt.LeftButton, Qt.NoModifier, QPoint(20, below))
+    assert not tree.selectedItems() and m.g_opts.title() == "Options for all sessions"
+
+    # queueing: each ticked session with its own options, or the shared ones
+    sent = []
+    m.queue_jobs.connect(sent.append)
+    m._set_all_checked(Qt.Checked)
+    m.queue()
+    a, b = sent[-1]
+    assert a.clip_paths == [str(c.path) for c in s0.clips] and a.options.merge_mode == "trim"
+    assert (a.make_video, a.compress, a.rip_audio_tracks) == (True, True, [])
+    assert (b.make_video, b.compress, b.rip_audio_tracks, b.options.merge_mode) == (False, False, [0], "merge")
+
+    # Use shared options drops the star
+    _select_rows(tree, [0, 1])
+    assert m.g_opts.title() == "Options for 2 selected sessions" and m.r_trim.isChecked()   # the first's
+    m.b_shared.click()
+    assert not m.custom and first.text(0) == s0.name and second.text(0) == s1.name
+    assert not m.b_shared.isEnabled() and m.r_merge.isChecked() and m.compress.isChecked()
+    w.close()
+
+
+def test_clips_per_clip_options():
+    from PySide6.QtTest import QTest
+    (WORK / "pc_src").mkdir()
+    a = fx.single_clip(WORK / "pc_src")
+    b = WORK / "pc_src" / "other.mp4"
+    shutil.copy(a, b)
+    with open(b, "ab") as f:
+        f.write(b"\0" * 64)
+    w = window(WORK / "pc_out")
+    w.queue.auto_start.setChecked(False)
+    c = w.clips
+    w._route([str(a), str(b)])
+    pump(15, lambda: len(c.entries) == 2)
+    ea, eb = c.entries
+    c.table.selectRow(0)
+    pump(0.5)
+    assert c.opts_title.text() == f"Options for {ea.path.name}"
+    c.compress.setChecked(True)
+    c.keep_checks[0].setChecked(False)
+    assert ea.opts and ea.opts["compress"] and ea.opts["drop_tracks"] == [0] and eb.opts is None
+    assert c.table.item(0, 0).text().startswith("★ ") and not c.table.item(1, 0).text().startswith("★")
+    assert "Uses its own options" in c.table.item(0, 0).toolTip()
+
+    # nothing selected: no player or trims, the shared options, and nothing breaks
+    c.deselect_all()
+    assert not c.selected_entries() and c.current is None and c.timeline.duration == 0
+    assert c.opts_title.text() == "Options for all clips" and not c.compress.isChecked()
+    assert all(k.isChecked() for k in c.keep_checks) and not c.out_name.isEnabled()
+    c.mark_in()
+    c.mark_out()
+    c.step(1)
+    c.clear_segments()
+    c.remove_segment()
+    c.rip_video.setChecked(True)
+    assert c.shared["rip_video"] and not ea.opts["rip_video"]
+
+    c.table.selectRow(1)
+    pump(0.5)
+    assert c.rip_video.isChecked() and eb.opts is None            # shows the shared options
+    c.table.setFocus()
+    QTest.keyClick(c.table, Qt.Key_Escape)
+    assert not c.selected_entries()
+
+    sent = []
+    c.queue_jobs.connect(sent.append)
+    c.queue(selected_only=False)
+    ja, jb = sent[-1]
+    assert ja.source == str(ea.path) and (ja.compress, ja.audio_tracks, ja.rip_video) == (True, [1], False)
+    assert jb.source == str(eb.path) and (jb.compress, jb.audio_tracks, jb.rip_video) == (False, None, True)
+
+    c.table.selectRow(0)
+    pump(0.5)
+    assert c.b_shared.isEnabled()
+    c.b_shared.click()
+    assert ea.opts is None and not c.table.item(0, 0).text().startswith("★")
+    assert not c.compress.isChecked() and c.rip_video.isChecked()
+    w.close()
+
+
+def test_save_state_keeps_own_options():
+    (WORK / "so_src").mkdir()
+    clip = fx.single_clip(WORK / "so_src")
+    rep = WORK / "so_rep"
+    fx.shared_replays(rep)
+    w = window(WORK / "so_out")
+    w.queue.auto_start.setChecked(False)
+    w._route([str(clip)])
+    pump(15, lambda: w.clips.entries)
+    w.clips.table.selectRow(0)
+    w.clips.compress.setChecked(True)
+    w.clips.rip_checks[1].setChecked(True)
+    w.clips.deselect_all()
+    w.clips.exact.setChecked(True)                    # a shared option
+    w.tabs.setCurrentWidget(w.merge)
+    w._route([str(rep)])
+    pump(30, lambda: w.merge.sessions)
+    m = w.merge
+    _select_rows(m.tree, [1])
+    m.g_rip.setChecked(True)
+    m.rip_checks[0].setChecked(True)
+    m.deselect_all()
+    m.info_file.setChecked(True)
+    w.close()
+
+    w2 = window(WORK / "so_out")
+    pump(30, lambda: w2.clips.entries and w2.merge.sessions)
+    e = w2.clips.entries[0]
+    assert e.opts["compress"] and e.opts["rip_tracks"] == [1] and not e.opts["exact"]
+    assert w2.clips.shared["exact"] and not w2.clips.shared["compress"]
+    assert w2.clips.table.item(0, 0).text().startswith("★ ")
+    m2 = w2.merge
+    s0, s1 = m2.sessions
+    assert id(s0) not in m2.custom and m2.custom[id(s1)]["rip"] and m2.custom[id(s1)]["rip_tracks"] == [0]
+    assert m2.tree.topLevelItem(1).text(0) == "★ " + s1.name
+    assert m2.shared["info_file"] and m2.info_file.isChecked() and not m2.g_rip.isChecked()
+    w2.settings.on_close = "discard"
+    w2.close()
+
+
+def test_new_replay_keeps_session_options():
+    """A replay that joins a session (watch folder) keeps that session's own options and name."""
+    paths = fx.shared_replays(WORK / "grow_rep")
+    w = window(WORK / "grow_out")
+    m = w.merge
+    w.tabs.setCurrentWidget(m)
+    m.add_paths(paths[:2] + paths[4:])
+    pump(30, lambda: m.sessions)
+    assert [len(s.clips) for s in m.sessions] == [2, 1]
+    _select_rows(m.tree, [0])
+    m.compress.setChecked(True)
+    m.tree.topLevelItem(0).setText(3, "Long round")
+    m.tree.topLevelItem(1).setCheckState(0, Qt.Checked)
+    m.add_paths(paths[2:4])
+    pump(30, lambda: [len(s.clips) for s in m.sessions] == [4, 1])
+    top = m.tree.topLevelItem(0)
+    assert m.custom[id(m.sessions[0])]["compress"] and top.text(0).startswith("★ ")
+    assert top.data(3, Qt.UserRole) == "Long round" and top.isSelected()
+    assert m.tree.topLevelItem(1).checkState(0) == Qt.Checked          # unchanged session: tick kept
+    assert m.compress.isChecked() and m.g_opts.title() == f"Options for {m.sessions[0].name}"
     w.close()

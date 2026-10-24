@@ -22,7 +22,7 @@ from ..core.render import AUDIO_RIP_FORMATS
 from ..core.jobs import JobContext, JobOptions, MergeJob, run_job, session_names
 from ..core.util import VIDEO_EXTENSIONS, format_hms, format_hms_ms, parse_timecode, sanitize_filename
 from .theme import colour, set_kind
-from .widgets import HintTree, card, hbox, label
+from .widgets import OWN_TIP, STAR, HintTree, OptionBinding, card, clean_opts, copy_opts, hbox, label
 from .folder_watch import FolderWatcher
 from .preview import PreviewDialog
 from .queue_checks import check_new_jobs
@@ -146,6 +146,15 @@ class SessionView(QWidget):
 
 PREVIEW_PREFIX = "trimmer_preview_"
 
+# What each session is saved with: the shared options, or a session's own. Track lists are indices.
+DEFAULT_OPTS = {
+    "mode": "merge", "method": "auto",
+    "save_video": True, "drop_tracks": [], "mix": False, "mix_keep": True,      # drop: tracks left out
+    "compress": False, "preset": "Custom (Settings)",
+    "rip": False, "rip_tracks": [], "rip_fmt": "copy", "rip_video": False,
+    "info_file": False, "delete_orig": False,
+}
+
 
 class _Bridge(QObject):
     stage = Signal(str)
@@ -161,7 +170,9 @@ class MergeTab(QWidget):
         self.paths = []
         self.sessions = []
         self.tasks = []
-        self._saved = []            # saved ticks and names, applied when detection finishes
+        self._saved = []            # saved ticks, names and options, applied when detection finishes
+        self.shared = copy_opts(DEFAULT_OPTS)   # options of every session without its own
+        self.custom = {}            # id(session) -> that session's own options
         self.used = {}              # id(session) -> (ranges, "quick" | "exact" | "estimate")
         self.viewers = []           # open clip viewers
         self.watcher = FolderWatcher(parent=self)
@@ -191,7 +202,10 @@ class MergeTab(QWidget):
         b_watch = set_kind(QPushButton("Choose…"), "ghost")
         b_watch.clicked.connect(lambda: self._choose_watch_folder())
         self.watch_hint = label("", "muted")
-        lay.addWidget(hbox(self.watch_box, self.watch_path, b_watch, self.watch_hint, "stretch",
+        b_desel = set_kind(QPushButton("Deselect all"), "ghost")
+        b_desel.setToolTip("Back to the options for all sessions  (Esc in the list)")
+        b_desel.clicked.connect(lambda: self.deselect_all())
+        lay.addWidget(hbox(self.watch_box, self.watch_path, b_watch, self.watch_hint, "stretch", b_desel,
                            stretch_end=False))
 
         split = QSplitter(Qt.Vertical)
@@ -205,6 +219,7 @@ class MergeTab(QWidget):
         self.tree.headerItem().setToolTip(3, "Double-click a session (or press F2) to name its output")
         self.tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.tree.easy_deselect = True
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._menu)
         self.tree.itemDoubleClicked.connect(self._edit_name)
@@ -230,12 +245,11 @@ class MergeTab(QWidget):
         split.setSizes([300, 170])
         lay.addWidget(split, 1)
 
-        g = QGroupBox("For each ticked session")
+        self.g_opts = g = QGroupBox("Options for all sessions")
         gl = QVBoxLayout(g)
         gl.setSpacing(8)
         self.r_merge = QRadioButton("Merge into one video")
         self.r_trim = QRadioButton("Keep separate, remove repeated footage")
-        self.r_trim.toggled.connect(self._refresh_default_names)
         self.r_trim.toggled.connect(self._retitle_out)
         self.method = QComboBox()
         self.method.addItem("Auto: exact lossless join when possible, otherwise re-encode", "auto")
@@ -297,35 +311,138 @@ class MergeTab(QWidget):
         self.delete_orig = QCheckBox("Delete original clips once the result is saved and checked")
         gl.addWidget(hbox(self.info_file, self.delete_orig))
         lay.addWidget(g)
+        self.form = OptionBinding(self._opt_changed)
+        self.form.add("mode", lambda: "trim" if self.r_trim.isChecked() else "merge",
+                      lambda v: (self.r_trim if v == "trim" else self.r_merge).setChecked(True), self.r_trim.toggled)
+        self.form.combo("method", self.method)
+        self.form.check("save_video", self.g_out)
+        self.form.check("mix", self.mix)
+        self.form.check("mix_keep", self.mix_keep)
+        self.form.check("compress", self.compress)
+        self.form.combo("preset", self.preset, by_text=True)
+        self.form.check("rip", self.g_rip)
+        self.form.combo("rip_fmt", self.rip_fmt)
+        self.form.check("rip_video", self.rip_video)
+        self.form.check("info_file", self.info_file)
+        self.form.check("delete_orig", self.delete_orig)
         self.keep_checks, self.rip_checks = [], []
-        self._build_track_checks()
+        self.b_shared = set_kind(QPushButton("Use shared options"), "ghost")
+        self.b_shared.setToolTip("The selected sessions drop their own options (★) and use the options for all sessions")
+        self.b_shared.clicked.connect(lambda: self.use_shared())
+        self.opts_hint = label("", "muted")
         self.b_queue = set_kind(QPushButton("Add ticked sessions to queue"), "primary")
         self.b_queue.clicked.connect(self.queue)
-        lay.addWidget(hbox("stretch", self.b_queue, stretch_end=False))
+        lay.addWidget(hbox(self.b_shared, self.opts_hint, "stretch", self.b_queue, stretch_end=False))
         self.refresh_from_settings()
 
     def refresh_from_settings(self):
+        """The settings' defaults become the shared options; sessions with their own keep them."""
         s = self.main.settings
-        (self.r_trim if s.merge_mode == "trim" else self.r_merge).setChecked(True)
-        self.method.setCurrentIndex(max(0, self.method.findData(s.merge_method)))
-        self.info_file.setChecked(s.generate_clip_log)
-        self.rip_fmt.setCurrentIndex(max(0, self.rip_fmt.findData(s.rip_format)))
-        self.delete_orig.setChecked(s.delete_originals)
-        cur = self.preset.currentText()
-        self.preset.clear()
-        self.preset.addItem("Custom (Settings)")
-        self.preset.addItems(list(s.presets.keys()))
-        self.preset.setCurrentIndex(max(0, self.preset.findText(cur)))
+        self.shared.update(mode="trim" if s.merge_mode == "trim" else "merge", method=s.merge_method,
+                           info_file=s.generate_clip_log, rip_fmt=s.rip_format, delete_orig=s.delete_originals)
+        with self.form.quiet():
+            self.preset.clear()
+            self.preset.addItem("Custom (Settings)")
+            self.preset.addItems(list(s.presets.keys()))
+        self._show_opts()
+        self._refresh_default_names()
 
-    def _opts(self) -> JobOptions:
+    def _opts(self, st=None) -> JobOptions:
+        """Job options for a session's options (default: the shared ones)."""
+        st = st or self.shared
         o = JobOptions.from_settings(self.main.settings)
         o.output_dir = self.main.output_dir()
-        o.merge_mode = "trim" if self.r_trim.isChecked() else "merge"
-        o.merge_method = self.method.currentData()
-        o.generate_clip_log = self.info_file.isChecked()
-        o.delete_originals = self.delete_orig.isChecked()
-        o.rip_format = self.rip_fmt.currentData()
+        o.merge_mode = st["mode"]
+        o.merge_method = st["method"]
+        o.generate_clip_log = st["info_file"]
+        o.delete_originals = st["delete_orig"]
+        o.rip_format = st["rip_fmt"]
         return o
+
+    # ------------------------------------------------- per-session options
+    def _eff(self, s) -> dict:
+        """The options a session is saved with: its own, else the shared ones."""
+        return self.custom.get(id(s)) or self.shared
+
+    def _selected_sessions(self):
+        """Indices of the sessions under the selected rows (a clip row means its session)."""
+        n = min(self.tree.topLevelItemCount(), len(self.sessions))
+        picked = set()
+        for it in self.tree.selectedItems():
+            i = self.tree.indexOfTopLevelItem(it if it.parent() is None else it.parent())
+            if 0 <= i < n:
+                picked.add(i)
+        return sorted(picked)
+
+    def _shown_opts(self) -> dict:
+        sel = self._selected_sessions()
+        return self._eff(self.sessions[sel[0]]) if sel else self.shared
+
+    def _show_opts(self):
+        """Show the first selected session's options, or the shared ones when nothing is selected."""
+        sel = self._selected_sessions()
+        if not sel:
+            self.g_opts.setTitle("Options for all sessions")
+            self.opts_hint.setText("Select sessions to give them their own options")
+        else:
+            self.g_opts.setTitle(f"Options for {self.sessions[sel[0]].name}" if len(sel) == 1
+                                 else f"Options for {len(sel)} selected sessions")
+            self.opts_hint.setText("Changes apply to the selected session" + ("s" if len(sel) > 1 else "")
+                                   + " only, ★ marks own options")
+        self._build_track_checks()
+        self.form.write(self._shown_opts())
+        self.b_shared.setEnabled(any(id(self.sessions[i]) in self.custom for i in sel))
+
+    def _change(self, fn):
+        """Apply a change: to the shared options, or to each selected session's own (starting from
+        what it uses now)."""
+        sel = self._selected_sessions()
+        if not sel:
+            fn(self.shared)
+            return
+        for i in sel:
+            s = self.sessions[i]
+            if id(s) not in self.custom:
+                self.custom[id(s)] = copy_opts(self.shared)
+            fn(self.custom[id(s)])
+        self._mark_stars()
+        self.b_shared.setEnabled(True)
+
+    def _opt_changed(self, key, value):
+        self._change(lambda st: st.__setitem__(key, value))
+        if key == "mode":
+            self._refresh_default_names()
+
+    def _track_toggled(self, key, t, on):
+        if self.form.writing:
+            return
+        add = on if key == "rip_tracks" else not on
+
+        def fn(st):
+            got = set(st[key])
+            (got.add if add else got.discard)(t)
+            st[key] = sorted(got)
+        self._change(fn)
+
+    def _mark_stars(self):
+        self.tree.blockSignals(True)
+        for i in range(min(self.tree.topLevelItemCount(), len(self.sessions))):
+            s, it = self.sessions[i], self.tree.topLevelItem(i)
+            own = id(s) in self.custom
+            it.setText(0, STAR + s.name if own else s.name)
+            it.setToolTip(0, OWN_TIP if own else "")
+        self.tree.blockSignals(False)
+
+    def use_shared(self):
+        """The selected sessions drop their own options."""
+        for i in self._selected_sessions():
+            self.custom.pop(id(self.sessions[i]), None)
+        self._mark_stars()
+        self._show_opts()
+        self._refresh_default_names()
+
+    def deselect_all(self):
+        self.tree.selectionModel().clear()
 
     def add_paths(self, paths):
         known = {str(p) for p in self.paths}
@@ -390,10 +507,9 @@ class MergeTab(QWidget):
 
     def clear(self):
         self.paths, self.sessions = [], []
-        self.used = {}
+        self.used, self.custom = {}, {}
         self.tree.clear()
-        self.view.set_session(None)
-        self._build_track_checks()
+        self._sel()
 
     def detect(self):
         mopts = self._opts().merge_options()
@@ -411,27 +527,30 @@ class MergeTab(QWidget):
         t.start()
 
     def _show(self, sessions, skipped, notes):
+        # Ticks, names, own options and the selection carry over to the sessions found again
+        self._saved = self.snapshot()["sessions"] + [d for d in self._saved if not d.get("used")]
         self.sessions = sessions
-        self.used = {}
+        self.used, self.custom = {}, {}
         # No selection or tick signals while the rows are rebuilt: the list has fewer rows than sessions
         self.tree.blockSignals(True)
         try:
-            self._fill(sessions)
+            for it in self._fill(sessions):
+                it.setSelected(True)
         finally:
             self.tree.blockSignals(False)
-        self._saved = [d for d in self._saved if not d.get("used")]
+        self._saved = []
         self._refresh_default_names()
-        self._build_track_checks()
-        if sessions:
-            self.tree.setCurrentItem(self.tree.topLevelItem(0))
-            self._sel()             # the current row may already have been set while signals were off
+        self._mark_stars()
+        self._sel()
         msg = f"Found {len(sessions)} session(s) in {sum(len(s.clips) for s in sessions)} clip(s)."
         if skipped:
             msg += f" Skipped {len(skipped)} file(s) that couldn't be read."
         self.status.emit(msg)
 
     def _fill(self, sessions):
+        """Rebuild the rows; returns the rows that were selected before."""
         self.tree.clear()
+        selected = []
         for s in sessions:
             length = (s.end - s.start).total_seconds()
             it = QTreeWidgetItem([s.name, str(len(s.clips)), format_hms(length), "",
@@ -439,7 +558,8 @@ class MergeTab(QWidget):
             it.setFlags(it.flags() | Qt.ItemIsEditable)
             it.setData(3, Qt.UserRole, "")
             it.setCheckState(0, Qt.Checked if len(s.clips) > 1 else Qt.Unchecked)
-            self._apply_saved(it, s)
+            if self._apply_saved(it, s):
+                selected.append(it)
             dropped = {id(c) for c in s.dropped}
             for c in s.clips:
                 note = []
@@ -450,6 +570,7 @@ class MergeTab(QWidget):
                 child = QTreeWidgetItem([c.path.name, "", format_hms(c.duration), "", "; ".join(note)])
                 it.addChild(child)
             self.tree.addTopLevelItem(it)
+        return selected
 
     # ---------------------------------------------------------- save state
     @staticmethod
@@ -457,36 +578,56 @@ class MergeTab(QWidget):
         return sorted(str(c.path) for c in s.clips)
 
     def snapshot(self) -> dict:
-        """The loaded replays, and each session's tick and custom name, for the save state."""
+        """The loaded replays, each session's tick, custom name, own options and selection, and the
+        shared options, for the save state."""
         sessions = []
+        sel = self._selected_sessions()
         for i, s in enumerate(self.sessions[:self.tree.topLevelItemCount()]):
             it = self.tree.topLevelItem(i)
-            sessions.append({"clips": self._session_key(s), "checked": it.checkState(0) == Qt.Checked,
-                             "name": it.data(3, Qt.UserRole) or ""})
-        return {"paths": [str(p) for p in self.paths], "sessions": sessions}
+            d = {"clips": self._session_key(s), "checked": it.checkState(0) == Qt.Checked,
+                 "name": it.data(3, Qt.UserRole) or "", "selected": i in sel}
+            if id(s) in self.custom:
+                d["opts"] = copy_opts(self.custom[id(s)])
+            sessions.append(d)
+        return {"paths": [str(p) for p in self.paths], "sessions": sessions, "shared": copy_opts(self.shared)}
 
     def restore(self, data: dict) -> list:
-        """Re-add the saved replays; ticks and names are applied after detection.
+        """Re-add the saved replays; ticks, names and own options are applied after detection.
         Returns the paths that no longer exist."""
         paths = [p for p in data.get("paths", []) if isinstance(p, str)]
         found = [p for p in paths if Path(p).exists()]
         self._saved = [dict(d) for d in data.get("sessions", []) if isinstance(d, dict)]
+        if isinstance(data.get("shared"), dict):
+            self.shared = clean_opts(data["shared"], self.shared)
+            self._show_opts()
         if found:
             self.add_paths(found)
         return [p for p in paths if p not in found]
 
-    def _apply_saved(self, it, s):
+    def _apply_saved(self, it, s) -> bool:
+        """Give a session the saved state of the same clips. A session that has grown since (a new
+        replay joined it) keeps its name, own options and selection, but gets the usual tick.
+        Returns whether it was selected."""
         key = self._session_key(s)
-        for d in self._saved:
-            if d.get("clips") == key and not d.get("used"):
-                d["used"] = True
-                it.setCheckState(0, Qt.Checked if d.get("checked") else Qt.Unchecked)
-                name = d.get("name")
-                if isinstance(name, str) and name:
-                    it.setData(3, Qt.UserRole, name)
-                    it.setText(3, name)
-                    it.setForeground(3, colour("text"))
-                return
+        left = [d for d in self._saved if not d.get("used") and isinstance(d.get("clips"), list)
+                and d["clips"] and all(isinstance(p, str) for p in d["clips"])]
+        d = next((d for d in left if d["clips"] == key), None)
+        exact = d is not None
+        if d is None:
+            d = next((d for d in left if set(d["clips"]) <= set(key)), None)
+            if d is None:
+                return False
+        d["used"] = True
+        if exact:
+            it.setCheckState(0, Qt.Checked if d.get("checked") else Qt.Unchecked)
+        name = d.get("name")
+        if isinstance(name, str) and name:
+            it.setData(3, Qt.UserRole, name)
+            it.setText(3, name)
+            it.setForeground(3, colour("text"))
+        if isinstance(d.get("opts"), dict):
+            self.custom[id(s)] = clean_opts(d["opts"], self.shared)
+        return d.get("selected") is True
 
     # ---------------------------------------------------------- naming
     def _default_name(self, i, plain=False):
@@ -494,7 +635,7 @@ class MergeTab(QWidget):
         if len(s.clips) == 1:
             return s.clips[0].path.stem
         merged, folder = session_names(s)
-        if self.r_trim.isChecked():
+        if self._eff(s)["mode"] == "trim":
             return folder if plain else folder + "  (folder)"
         return merged
 
@@ -636,7 +777,7 @@ class MergeTab(QWidget):
             d.set_used(None, "None of this clip is used: everything in it is also in the clips around it.")
             return
         a, b = rng
-        what = "kept" if self.r_trim.isChecked() else "used in the merge"
+        what = "kept" if self._eff(s)["mode"] == "trim" else "used in the merge"
         tail = {"quick": "Approximate, from the clip timestamps. Working out the exact cut…",
                 "exact": "Exact: matched frame by frame with the neighbouring clips.",
                 "estimate": "Estimated from timestamps and audio; the clips don't share identical "
@@ -644,16 +785,18 @@ class MergeTab(QWidget):
         d.set_used((a, b), f"Highlighted {format_hms_ms(a)} to {format_hms_ms(b)}: the part {what}; "
                            f"the rest repeats footage from a neighbouring clip. {tail}")
 
-    def _current_session(self):
+    def _focus_session(self):
+        """The session to show: the current row's if it is selected, else the first selected one."""
+        sel = self._selected_sessions()
         it = self.tree.currentItem()
-        if it is None:
-            return None
-        top = it if it.parent() is None else it.parent()
-        i = self.tree.indexOfTopLevelItem(top)
-        return self.sessions[i] if 0 <= i < len(self.sessions) else None
+        if it is not None and it.isSelected():
+            i = self.tree.indexOfTopLevelItem(it if it.parent() is None else it.parent())
+            if i in sel:
+                return self.sessions[i]
+        return self.sessions[sel[0]] if sel else None
 
     def preview_merged(self):
-        s = self._current_session()
+        s = self._focus_session()
         if s is None:
             QMessageBox.information(self, "No session", "Select a session first.")
             return
@@ -661,7 +804,7 @@ class MergeTab(QWidget):
             self.open_clip(s.clips[0])
             return
         tmp = tempfile.mkdtemp(prefix=PREVIEW_PREFIX)
-        o = self._opts()
+        o = self._opts(self._eff(s))
         o.output_dir, o.merge_mode, o.delete_originals = tmp, "merge", False
         o.generate_clip_log, o.name_suffix, o.add_operation_tags, o.conflict_policy = False, "", False, "overwrite"
         job = MergeJob(clip_paths=[str(c.path) for c in s.clips], options=o, output_name="Merged preview",
@@ -724,25 +867,25 @@ class MergeTab(QWidget):
         t.start()
 
     def _sel(self):
-        it = self.tree.currentItem()
-        if it is None:
-            return
-        top = it if it.parent() is None else it.parent()
-        i = self.tree.indexOfTopLevelItem(top)
-        self._build_track_checks()
-        if 0 <= i < len(self.sessions):
-            s = self.sessions[i]
+        self._show_opts()
+        s = self._focus_session()
+        self.b_preview.setEnabled(s is not None)
+        if s is not self.view.session:
             self.view.set_session(s)
-            if len(s.clips) > 1:
-                self._ensure_used(s)
-                ranges, how = self.used[id(s)]
-                self.view.set_used(ranges)
-                self._hint(how)
-            else:
-                self.view_hint.setText("Click a clip to watch it")
-            mk = next((str(d.clip.path) for d in self.viewers if any(c is d.clip for c in s.clips)), None)
-            if mk is None:
-                self.view.set_marker(None, 0)
+        if s is None:
+            self.view_hint.setText("Click a clip to watch it")
+            self.view.set_marker(None, 0)
+            return
+        if len(s.clips) > 1:
+            self._ensure_used(s)
+            ranges, how = self.used[id(s)]
+            self.view.set_used(ranges)
+            self._hint(how)
+        else:
+            self.view_hint.setText("Click a clip to watch it")
+        mk = next((str(d.clip.path) for d in self.viewers if any(c is d.clip for c in s.clips)), None)
+        if mk is None:
+            self.view.set_marker(None, 0)
 
     # ------------------------------------------------- send to the Clips tab
     def _selection(self):
@@ -788,7 +931,6 @@ class MergeTab(QWidget):
         """Remove these clips from Replay merge and find the sessions again. Ticks and names of the
         sessions that stay are kept."""
         gone = {str(p) for p in paths}
-        self._saved = self.snapshot()["sessions"]
         self.paths = [p for p in self.paths if str(p) not in gone]
         if self.paths:
             self.detect()
@@ -813,13 +955,13 @@ class MergeTab(QWidget):
         sessions = [s for s in sessions if len(s.clips) > 1]
         if not sessions:
             return
-        o = self._opts()
-        o.merge_mode, o.delete_originals, o.generate_clip_log = "merge", False, False
         jobs, groups = [], {}
         for s in sessions:
+            o = self._opts(self._eff(s))
+            o.merge_mode, o.delete_originals, o.generate_clip_log = "merge", False, False
             name = self.tree.topLevelItem(self.sessions.index(s)).data(3, Qt.UserRole) or ""
             job = MergeJob(clip_paths=[str(c.path) for c in s.clips], title_text=f"Session {s.name}",
-                           options=JobOptions(**vars(o)), output_name=name)
+                           options=o, output_name=name)
             jobs.append(job)
             groups[id(job)] = [c.path for c in s.clips]
         jobs = check_new_jobs(self.main, jobs, {str(c.path): c.info for s in sessions for c in s.clips},
@@ -856,21 +998,16 @@ class MergeTab(QWidget):
         return [s for s, it in zip(self.sessions, items) if it is not None and it.checkState(0) == Qt.Checked]
 
     def _track_sessions(self):
-        """Sessions whose tracks the checkboxes describe: the ticked ones, else the selected one, else all."""
-        ticked = self._ticked()
-        if ticked:
-            return ticked
-        it = self.tree.currentItem()
-        if it is not None:
-            i = self.tree.indexOfTopLevelItem(it if it.parent() is None else it.parent())
-            if 0 <= i < len(self.sessions):
-                return [self.sessions[i]]
-        return list(self.sessions)
+        """Sessions whose tracks the checkboxes describe: the selected ones, else the ticked ones, else all."""
+        sel = self._selected_sessions()
+        if sel:
+            return [self.sessions[i] for i in sel]
+        return self._ticked() or list(self.sessions)
 
     def _build_track_checks(self):
-        """One keep and one rip checkbox per audio track of the sessions in play, keeping ticks that still apply."""
-        old_keep = [c.isChecked() for c in self.keep_checks]
-        old_rip = [c.isChecked() for c in self.rip_checks]
+        """One keep and one rip checkbox per audio track of the sessions in play, ticked as the
+        options shown say."""
+        st = self._shown_opts()
         for lay in (self.keep_lay, self.rip_lay):
             while lay.count():
                 w = lay.takeAt(0).widget()
@@ -883,11 +1020,13 @@ class MergeTab(QWidget):
         for t in range(n):
             text = f"{t + 1}: {ref[t].label}"
             k = QCheckBox(text)
-            k.setChecked(old_keep[t] if t < len(old_keep) else True)
+            k.setChecked(t not in st["drop_tracks"])
+            k.toggled.connect(lambda on, t=t: self._track_toggled("drop_tracks", t, on))
             self.keep_lay.addWidget(k)
             self.keep_checks.append(k)
             rc = QCheckBox(text)
-            rc.setChecked(old_rip[t] if t < len(old_rip) else False)
+            rc.setChecked(t in st["rip_tracks"])
+            rc.toggled.connect(lambda on, t=t: self._track_toggled("rip_tracks", t, on))
             self.rip_lay.addWidget(rc)
             self.rip_checks.append(rc)
         if n == 0:
@@ -896,49 +1035,53 @@ class MergeTab(QWidget):
         self.keep_lay.addStretch(1)
         self.rip_lay.addStretch(1)
 
-    def encode_settings(self) -> EncodeSettings:
-        name = self.preset.currentText()
+    def _enc(self, st) -> EncodeSettings:
+        name = st["preset"]
         s = self.main.settings
         return EncodeSettings.from_dict(s.presets[name]) if name in s.presets else s.encode_settings()
 
     def queue(self):
-        chosen = self._ticked()
+        """Queue each ticked session with its own options, or the shared ones."""
+        chosen = [(s, self._eff(s)) for s in self._ticked()]
         if not chosen:
             QMessageBox.information(self, "Nothing ticked", "Tick at least one session.")
             return
-        enc = self.encode_settings()
-        if self.compress.isChecked() and enc.problems():
-            QMessageBox.warning(self, "Compression settings", "\n".join(enc.problems()))
-            return
-        keep = [i for i, c in enumerate(self.keep_checks) if c.isChecked()]
-        rips = [i for i, c in enumerate(self.rip_checks) if c.isChecked()] if self.g_rip.isChecked() else []
-        save_video = self.g_out.isChecked()
-        rip_video = self.g_rip.isChecked() and self.rip_video.isChecked()
-        if not save_video and not rips and not rip_video:
-            QMessageBox.information(self, "Nothing to do",
-                                    "Tick 'Save the merged video' or choose tracks to rip.")
-            return
-        o = self._opts()
-        if o.delete_originals:
-            n = sum(len(s.clips) for s in chosen)
+        for s, st in chosen:
+            enc = self._enc(st)
+            if st["save_video"] and st["compress"] and enc.problems():
+                QMessageBox.warning(self, "Compression settings", "\n".join(enc.problems()))
+                return
+        plans = []
+        for s, st in chosen:
+            n_tracks = min(len(c.info.audio) for c in s.clips)
+            rips = [t for t in st["rip_tracks"] if t < n_tracks] if st["rip"] else []
+            rip_video = st["rip"] and st["rip_video"]
+            if not st["save_video"] and not rips and not rip_video:
+                what = "Save the trimmed videos" if st["mode"] == "trim" else "Save the merged video"
+                QMessageBox.information(self, "Nothing to do",
+                                        f"Nothing to save for session {s.name}. "
+                                        f"Tick '{what}' or choose tracks to rip.")
+                return
+            plans.append((s, st, n_tracks, rips, rip_video))
+        n = sum(len(s.clips) for s, st in chosen if st["delete_orig"])
+        if n:
             where = "permanently deleted" if self.main.settings.permanent_delete else "moved to the Recycle Bin"
             if QMessageBox.question(self, "Delete originals?",
                                     f"{n} original clip(s) will be {where} once each result is saved and "
                                     f"checked. Continue?") != QMessageBox.Yes:
                 return
         jobs = []
-        for s in chosen:
-            n_tracks = min(len(c.info.audio) for c in s.clips)
-            tracks = [t for t in keep if t < n_tracks]
+        for s, st, n_tracks, rips, rip_video in plans:
+            tracks = [t for t in range(n_tracks) if t not in st["drop_tracks"]]
             jobs.append(MergeJob(
-                clip_paths=[str(c.path) for c in s.clips], make_video=save_video,
-                compress=save_video and self.compress.isChecked(), encode=enc.to_dict(),
+                clip_paths=[str(c.path) for c in s.clips], make_video=st["save_video"],
+                compress=st["save_video"] and st["compress"], encode=self._enc(st).to_dict(),
                 audio_tracks=None if len(tracks) == n_tracks else tracks,
-                mix_tracks=tracks if self.mix.isChecked() and len(tracks) >= 2 else None,
-                keep_mixed_originals=self.mix_keep.isChecked(),
-                rip_audio_tracks=[t for t in rips if t < n_tracks], rip_video=rip_video,
-                title_text=f"Session {s.name}", options=JobOptions(**vars(o)),
+                mix_tracks=tracks if st["mix"] and len(tracks) >= 2 else None,
+                keep_mixed_originals=st["mix_keep"],
+                rip_audio_tracks=rips, rip_video=rip_video,
+                title_text=f"Session {s.name}", options=self._opts(st),
                 output_name=self.tree.topLevelItem(self.sessions.index(s)).data(3, Qt.UserRole) or ""))
-        jobs = check_new_jobs(self.main, jobs, {str(c.path): c.info for s in chosen for c in s.clips}, self)
+        jobs = check_new_jobs(self.main, jobs, {str(c.path): c.info for s, _ in chosen for c in s.clips}, self)
         if jobs:
             self.queue_jobs.emit(jobs)

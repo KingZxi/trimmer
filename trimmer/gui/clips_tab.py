@@ -18,7 +18,8 @@ from ..core.render import AUDIO_RIP_FORMATS
 from ..core.util import format_hms, format_hms_ms, format_size, sanitize_filename
 from .queue_checks import check_new_jobs
 from .theme import set_kind
-from .widgets import EncodeForm, HintTable, Timeline, TrackPicker, card, clearable, hbox, label
+from .widgets import (OWN_TIP, STAR, EncodeForm, HintTable, OptionBinding, Timeline, TrackPicker, card, clean_opts,
+                      clearable, copy_opts, hbox, label)
 
 try:        # Windows Smart App Control can block Qt's multimedia DLLs
     from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -33,6 +34,13 @@ from .worker import Task
 
 COLS = ["Name", "Length", "Size", "Video", "Audio tracks", "Trim", "Notes"]
 
+# What each clip is saved with: the shared options, or a clip's own. Track lists are indices.
+DEFAULT_OPTS = {
+    "save_video": True, "drop_tracks": [], "mix": False, "mix_keep": True,      # drop: tracks left out
+    "compress": False, "preset": "Custom (Settings)", "exact": False,
+    "rip_tracks": [], "rip_fmt": "copy", "rip_video": False, "delete_orig": False,
+}
+
 
 class ClipEntry:
     def __init__(self, path: Path, info):
@@ -43,6 +51,7 @@ class ClipEntry:
         self.snap_note = ""
         self.snap_marks = []          # keyframes the cuts would snap back to
         self.out_name = ""          # user's name for the outputs; "" = from the original
+        self.opts = None            # its own options, or None for the shared ones
 
 
 def quick_fingerprint(path: Path) -> str:
@@ -86,6 +95,7 @@ class ClipsTab(QWidget):
         self.tasks = []
         self._restore = {}            # path -> saved edit state, applied as the clips finish loading
         self._restore_select = []
+        self.shared = copy_opts(DEFAULT_OPTS)   # options of every clip without its own
         self._build()
 
     # ------------------------------------------------------------- layout
@@ -104,6 +114,7 @@ class ClipsTab(QWidget):
         self.table.set_hint("Drop clips here", "Single files, a handful, or whole folders")
         self.table.setHorizontalHeaderLabels(COLS)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.easy_deselect = True
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setShowGrid(False)
         self.table.setFrameShape(QFrame.NoFrame)
@@ -128,7 +139,10 @@ class ClipsTab(QWidget):
         b_rm.clicked.connect(self.remove_selected)
         b_clear = set_kind(QPushButton("Clear"), "ghost")
         b_clear.clicked.connect(self.clear)
-        ll.addWidget(hbox(b_add, b_folder, "stretch", b_rm, b_clear, stretch_end=False))
+        b_desel = set_kind(QPushButton("Deselect all"), "ghost")
+        b_desel.setToolTip("Back to the options for all clips  (Esc in the list)")
+        b_desel.clicked.connect(lambda: self.deselect_all())
+        ll.addWidget(hbox(b_add, b_folder, "stretch", b_desel, b_rm, b_clear, stretch_end=False))
         split.addWidget(left)
 
         # ---- right: preview, trim, output options
@@ -210,6 +224,11 @@ class ClipsTab(QWidget):
         al = QVBoxLayout(acts)
         al.setContentsMargins(0, 0, 4, 0)
         al.setSpacing(10)
+        self.opts_title = label("Options for all clips", "h2")
+        self.b_shared = set_kind(QPushButton("Use shared options"), "ghost")
+        self.b_shared.setToolTip("The selected clips drop their own options (★) and use the options for all clips")
+        self.b_shared.clicked.connect(lambda: self.use_shared())
+        al.addWidget(hbox(self.opts_title, "stretch", self.b_shared, stretch_end=False))
 
         g_out = QGroupBox("Save the edited video")
         g_out.setCheckable(True)
@@ -266,6 +285,17 @@ class ClipsTab(QWidget):
         al.addStretch(1)
         scroll.setWidget(acts)
         rl.addWidget(scroll, 3)
+        self.form = OptionBinding(self._opt_changed)
+        self.form.check("save_video", self.g_out)
+        self.form.check("mix", self.mix)
+        self.form.check("mix_keep", self.mix_keep)
+        self.form.check("compress", self.compress)
+        self.form.combo("preset", self.preset, by_text=True)
+        self.form.check("exact", self.exact)
+        self.form.combo("rip_fmt", self.rip_fmt)
+        self.form.check("rip_video", self.rip_video)
+        self.form.check("delete_orig", self.delete_orig)
+        self.keep_checks, self.rip_checks = [], []
 
         # Pinned action bar
         b_est = set_kind(QPushButton("Estimate size"), "ghost")
@@ -295,23 +325,22 @@ class ClipsTab(QWidget):
 
     # ------------------------------------------------------------ settings
     def refresh_from_settings(self):
+        """The settings' defaults become the shared options; clips with their own keep them."""
         s = self.main.settings
-        cur = self.preset.currentText()
-        self.preset.clear()
-        self.preset.addItem("Custom (Settings)")
-        self.preset.addItems(list(s.presets.keys()))
-        i = self.preset.findText(cur)
-        self.preset.setCurrentIndex(max(0, i))
-        self.exact.setChecked(s.exact_cuts)
+        self.shared.update(exact=s.exact_cuts, delete_orig=s.delete_originals, rip_fmt=s.rip_format)
+        with self.form.quiet():
+            self.preset.clear()
+            self.preset.addItem("Custom (Settings)")
+            self.preset.addItems(list(s.presets.keys()))
         self.exact.setText("Frame-exact cuts (smart cut: only the frames at each cut are re-encoded)"
                            if s.smart_cut else "Frame-exact cuts (re-encodes at high quality when not compressing)")
-        self.delete_orig.setChecked(s.delete_originals)
-        self.rip_fmt.setCurrentIndex(max(0, self.rip_fmt.findData(s.rip_format)))
         self.delete_orig.setText("Delete originals after everything is saved and checked ("
                                  + ("permanently" if s.permanent_delete else "to Recycle Bin") + ")")
+        self._show_opts(self.selected_entries())
 
-    def encode_settings(self) -> EncodeSettings:
-        name = self.preset.currentText()
+    def encode_settings(self, name=None) -> EncodeSettings:
+        """A preset's settings (default: the one shown)."""
+        name = self.preset.currentText() if name is None else name
         s = self.main.settings
         if name in s.presets:
             return EncodeSettings.from_dict(s.presets[name])
@@ -384,9 +413,14 @@ class ClipsTab(QWidget):
     # ---------------------------------------------------------- save state
     def snapshot(self) -> dict:
         """The list and each clip's edits, for the save state."""
-        return {"entries": [{"path": str(e.path), "segments": [list(s) for s in e.segments],
-                             "out_name": e.out_name} for e in self.entries],
-                "selected": [str(e.path) for e in self.selected_entries()]}
+        entries = []
+        for e in self.entries:
+            d = {"path": str(e.path), "segments": [list(s) for s in e.segments], "out_name": e.out_name}
+            if e.opts is not None:
+                d["opts"] = copy_opts(e.opts)
+            entries.append(d)
+        return {"entries": entries, "selected": [str(e.path) for e in self.selected_entries()],
+                "shared": copy_opts(self.shared)}
 
     def restore(self, data: dict) -> list:
         """Re-add the saved clips (edits are applied as each one finishes
@@ -400,6 +434,9 @@ class ClipsTab(QWidget):
                 self._restore[d["path"]] = d
             else:
                 missing.append(d["path"])
+        if isinstance(data.get("shared"), dict):
+            self.shared = clean_opts(data["shared"], self.shared)
+            self._show_opts(self.selected_entries())
         sel = data.get("selected")
         self._restore_select = [p for p in sel if p in self._restore] if isinstance(sel, list) else []
         if found:
@@ -416,6 +453,8 @@ class ClipsTab(QWidget):
             e.segments = []
         if isinstance(d.get("out_name"), str):
             e.out_name = sanitize_filename(d["out_name"]) if d["out_name"] else ""
+        if isinstance(d.get("opts"), dict):
+            e.opts = clean_opts(d["opts"], self.shared)
 
     def _add_row(self, e: ClipEntry):
         r = self.table.rowCount()
@@ -426,12 +465,13 @@ class ClipsTab(QWidget):
         i = e.info
         tracks = ", ".join(a.label for a in i.audio) or "none"
         trim = "whole" if not e.segments else f"{len(e.segments)} part(s), {format_hms(self._kept(e))}"
-        vals = [e.path.name + (f"  →  {e.out_name}" if e.out_name else ""), format_hms(i.duration), format_size(i.size),
+        vals = [(STAR if e.opts is not None else "") + e.path.name + (f"  →  {e.out_name}" if e.out_name else ""),
+                format_hms(i.duration), format_size(i.size),
                 f"{i.resolution} {i.fps:.0f}fps {i.video_codec}" if i.has_video else "audio only",
                 f"{len(i.audio)}: {tracks}", trim, e.note]
         for c, v in enumerate(vals):
             item = QTableWidgetItem(v)
-            item.setToolTip(str(e.path) if c == 0 else v)
+            item.setToolTip(v if c else str(e.path) + (f"\n{OWN_TIP}" if e.opts is not None else ""))
             self.table.setItem(r, c, item)
 
     def _kept(self, e):
@@ -457,14 +497,15 @@ class ClipsTab(QWidget):
         self.fingerprints.clear()
         self.table.setRowCount(0)
         self._load(None)
+        self._show_opts([])
 
     def _selection_changed(self):
         sel = self.selected_entries()
         self._load(sel[0] if len(sel) == 1 else None)
-        self._build_track_checks(sel)
+        self._show_opts(sel)
         self._show_name(sel)
         n = len(sel)
-        self.b_queue_sel.setText(f"Add {n} selected to queue" if n != 1 else "Add to queue")
+        self.b_queue_sel.setText(f"Add {n} selected to queue" if n > 1 else "Add to queue" if n else "Add selected to queue")
         self.b_queue_sel.setEnabled(n > 0)
         self.estimate_label.setText("")
 
@@ -493,22 +534,83 @@ class ClipsTab(QWidget):
         e.out_name = sanitize_filename(text) if text and text != self._default_stem(e) else ""
         self._fill_row(self.entries.index(e), e)
 
-    def _build_track_checks(self, sel):
+    # ------------------------------------------------------ per-clip options
+    def _eff(self, e) -> dict:
+        """The options a clip is saved with: its own, else the shared ones."""
+        return e.opts or self.shared
+
+    def _show_opts(self, sel):
+        """Show the first selected clip's options, or the shared ones when nothing is selected."""
+        if not sel:
+            self.opts_title.setText("Options for all clips")
+        elif len(sel) == 1:
+            self.opts_title.setText(f"Options for {sel[0].path.name}")
+        else:
+            self.opts_title.setText(f"Options for {len(sel)} selected clips")
+        st = self._eff(sel[0]) if sel else self.shared
+        self._build_track_checks(sel or self.entries, st)
+        self.form.write(st)
+        self.b_shared.setEnabled(any(e.opts is not None for e in sel))
+
+    def _change(self, fn):
+        """Apply a change: to the shared options, or to each selected clip's own (starting from what
+        it uses now)."""
+        sel = self.selected_entries()
+        if not sel:
+            fn(self.shared)
+            return
+        for e in sel:
+            if e.opts is None:
+                e.opts = copy_opts(self.shared)
+            fn(e.opts)
+            self._fill_row(self.entries.index(e), e)
+        self.b_shared.setEnabled(True)
+
+    def _opt_changed(self, key, value):
+        self._change(lambda st: st.__setitem__(key, value))
+
+    def _track_toggled(self, key, t, on):
+        if self.form.writing:
+            return
+        add = on if key == "rip_tracks" else not on
+
+        def fn(st):
+            got = set(st[key])
+            (got.add if add else got.discard)(t)
+            st[key] = sorted(got)
+        self._change(fn)
+
+    def use_shared(self):
+        """The selected clips drop their own options."""
+        sel = self.selected_entries()
+        for e in sel:
+            e.opts = None
+            self._fill_row(self.entries.index(e), e)
+        self._show_opts(sel)
+
+    def deselect_all(self):
+        self.table.selectionModel().clear()
+
+    def _build_track_checks(self, entries, st):
+        """One keep and one rip checkbox per audio track of these clips, ticked as `st` says."""
         for lay in (self.track_lay, self.rip_lay):
             while lay.count():
                 w = lay.takeAt(0).widget()
                 if w:
                     w.deleteLater()
-        n = max((len(e.info.audio) for e in sel), default=0)
-        ref = max(sel, key=lambda e: len(e.info.audio)).info.audio if sel else []
+        n = max((len(e.info.audio) for e in entries), default=0)
+        ref = max(entries, key=lambda e: len(e.info.audio)).info.audio if entries else []
         self.keep_checks, self.rip_checks = [], []
         for t in range(n):
             label = f"{t + 1}: {ref[t].label}" if t < len(ref) else f"Track {t + 1}"
             k = QCheckBox(label)
-            k.setChecked(True)
+            k.setChecked(t not in st["drop_tracks"])
+            k.toggled.connect(lambda on, t=t: self._track_toggled("drop_tracks", t, on))
             self.track_lay.addWidget(k)
             self.keep_checks.append(k)
             rc = QCheckBox(label)
+            rc.setChecked(t in st["rip_tracks"])
+            rc.toggled.connect(lambda on, t=t: self._track_toggled("rip_tracks", t, on))
             self.rip_lay.addWidget(rc)
             self.rip_checks.append(rc)
         if n == 0:
@@ -673,40 +775,43 @@ class ClipsTab(QWidget):
         self.trim_info.setText(txt)
 
     # --------------------------------------------------------------- jobs
-    def _options(self) -> JobOptions:
+    def _options(self, st) -> JobOptions:
         o = JobOptions.from_settings(self.main.settings)
         o.output_dir = self.main.output_dir()
-        o.exact_cuts = self.exact.isChecked()
-        o.delete_originals = self.delete_orig.isChecked()
-        o.rip_format = self.rip_fmt.currentData()
+        o.exact_cuts = st["exact"]
+        o.delete_originals = st["delete_orig"]
+        o.rip_format = st["rip_fmt"]
         return o
 
     def build_jobs(self, entries):
-        enc = self.encode_settings()
-        problems = enc.problems() if self.compress.isChecked() else []
-        if problems:
-            QMessageBox.warning(self, "Compression settings", "\n".join(problems))
-            return []
-        jobs = []
-        keep = [i for i, c in enumerate(getattr(self, "keep_checks", [])) if c.isChecked()]
-        rips = [i for i, c in enumerate(getattr(self, "rip_checks", [])) if c.isChecked()]
-        save_video = self.g_out.isChecked()
-        if not save_video and not rips and not self.rip_video.isChecked():
+        """One job per clip, each with its own options or the shared ones."""
+        plans = [(e, self._eff(e)) for e in entries]
+        for e, st in plans:
+            problems = self.encode_settings(st["preset"]).problems() if st["save_video"] and st["compress"] else []
+            if problems:
+                QMessageBox.warning(self, "Compression settings", "\n".join(problems))
+                return []
+        idle = [e for e, st in plans if not st["save_video"] and not st["rip_video"]
+                and not [t for t in st["rip_tracks"] if t < len(e.info.audio)]]
+        if idle:
             QMessageBox.information(self, "Nothing to do",
+                                    f"Nothing to save for {', '.join(e.path.name for e in idle[:3])}"
+                                    f"{' and more' if len(idle) > 3 else ''}. "
                                     "Tick 'Save the edited video' or choose tracks to rip.")
             return []
-        for e in entries:
+        jobs = []
+        for e, st in plans:
             n = len(e.info.audio)
-            tracks = [t for t in keep if t < n]
+            tracks = [t for t in range(n) if t not in st["drop_tracks"]]
             job = ClipJob(
-                source=str(e.path), segments=list(e.segments), make_video=save_video,
+                source=str(e.path), segments=list(e.segments), make_video=st["save_video"],
                 audio_tracks=None if len(tracks) == n else tracks,
-                mix_tracks=tracks if (self.mix.isChecked() and len(tracks) >= 2) else None,
-                keep_mixed_originals=self.mix_keep.isChecked(),
-                compress=save_video and self.compress.isChecked(), encode=enc.to_dict(),
-                rip_audio_tracks=[t for t in rips if t < n], rip_video=self.rip_video.isChecked(),
+                mix_tracks=tracks if (st["mix"] and len(tracks) >= 2) else None,
+                keep_mixed_originals=st["mix_keep"],
+                compress=st["save_video"] and st["compress"], encode=self.encode_settings(st["preset"]).to_dict(),
+                rip_audio_tracks=[t for t in st["rip_tracks"] if t < n], rip_video=st["rip_video"],
                 output_name=e.out_name,
-                options=self._options())
+                options=self._options(st))
             jobs.append(job)
         return jobs
 
@@ -714,10 +819,11 @@ class ClipsTab(QWidget):
         entries = self.selected_entries() if selected_only else list(self.entries)
         if not entries:
             return
-        if self.delete_orig.isChecked():
+        n = sum(1 for e in entries if self._eff(e)["delete_orig"])
+        if n:
             where = "permanently deleted" if self.main.settings.permanent_delete else "moved to the Recycle Bin"
             if QMessageBox.question(self, "Delete originals?",
-                                    f"The {len(entries)} original file(s) will be {where} after their "
+                                    f"The {n} original file(s) will be {where} after their "
                                     f"outputs are saved and checked. Continue?") != QMessageBox.Yes:
                 return
         jobs = self.build_jobs(entries)
@@ -730,12 +836,15 @@ class ClipsTab(QWidget):
         entries = self.selected_entries() or list(self.entries)
         if not entries:
             return
-        compress = self.g_out.isChecked() and self.compress.isChecked()
-        enc = self.encode_settings()
+        plans = []
+        for e in entries:
+            st = self._eff(e)
+            plans.append((e, st["save_video"] and st["compress"], self.encode_settings(st["preset"])))
+        lossless = any(compress and enc.mode == "lossless" for _, compress, enc in plans)
 
         def work():
             total_in = total_out = 0
-            for e in entries:
+            for e, compress, enc in plans:
                 kept = self._kept(e)
                 part_in = int(e.info.size * kept / e.info.duration) if e.info.duration else e.info.size
                 total_in += e.info.size
@@ -755,7 +864,7 @@ class ClipsTab(QWidget):
         t.done.connect(lambda r: self.estimate_label.setText(
             f"About {format_size(r[1])} from {format_size(r[0])} of originals"
             + (f" (saves about {format_size(r[0] - r[1])})" if r[0] > r[1] else "")
-            + (". Lossless is a rough guess." if compress and enc.mode == "lossless" else ".")))
+            + (". Lossless is a rough guess." if lossless else ".")))
         t.failed.connect(lambda m: self.estimate_label.setText(f"Couldn't estimate: {m}"))
         self.tasks.append(t)
         t.start()

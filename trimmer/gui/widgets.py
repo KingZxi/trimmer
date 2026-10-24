@@ -1,9 +1,11 @@
 """Reusable widgets: the trim timeline, the compression settings form and
 the dark theme."""
 
+from contextlib import contextmanager
+
 from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QHBoxLayout,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QHBoxLayout,
                                QLabel, QMenu, QSpinBox, QTableWidget, QToolButton, QTreeWidget, QVBoxLayout, QWidget)
 
 from ..core.encode import CODECS, ENCODERS, VALID_PRESETS, EncodeSettings
@@ -16,6 +18,19 @@ class _Hint:
     """Paints a centred hint over an empty view (e.g. "Drop clips here")."""
     hint = ""
     sub_hint = ""
+    easy_deselect = False       # Esc, or a click on empty space, clears the selection
+
+    def keyPressEvent(self, e):
+        if (self.easy_deselect and e.key() == Qt.Key_Escape
+                and self.state() != QAbstractItemView.EditingState):
+            self.selectionModel().clear()
+            return
+        super().keyPressEvent(e)
+
+    def mousePressEvent(self, e):
+        if self.easy_deselect and not self.indexAt(e.position().toPoint()).isValid():
+            self.selectionModel().clear()
+        super().mousePressEvent(e)
 
     def set_hint(self, text, sub=""):
         self.hint, self.sub_hint = text, sub
@@ -53,6 +68,70 @@ class HintTable(_Hint, QTableWidget):
 class HintTree(_Hint, QTreeWidget):
     def _empty(self):
         return self.topLevelItemCount() == 0
+
+
+# ---------------------------------------------------------- per-item options
+STAR = "★ "                     # marks a list row that has its own options
+OWN_TIP = "Uses its own options"
+
+
+def copy_opts(opts: dict) -> dict:
+    return {k: list(v) if isinstance(v, list) else v for k, v in opts.items()}
+
+
+def clean_opts(data, base: dict) -> dict:
+    """Options read back from a save state: each key of `base` that has a value of the right
+    type (track lists: indices) is taken from `data`, the rest stay as in `base`."""
+    out = copy_opts(base)
+    if not isinstance(data, dict):
+        return out
+    for k, v in base.items():
+        got = data.get(k)
+        if isinstance(v, list):
+            if isinstance(got, list) and all(type(t) is int and t >= 0 for t in got):
+                out[k] = sorted(set(got))
+        elif type(got) is type(v):
+            out[k] = got
+    return out
+
+
+class OptionBinding:
+    """Links an options dict to the controls that show it. write() shows a dict without
+    reporting anything; a change the user makes calls on_change(key, new value)."""
+
+    def __init__(self, on_change):
+        self.on_change = on_change
+        self.fields = {}            # key -> (read, write)
+        self.writing = False
+
+    def add(self, key, read, write, signal):
+        self.fields[key] = (read, write)
+        signal.connect(lambda *_: self.writing or self.on_change(key, read()))
+
+    def check(self, key, w):
+        """A check box or a checkable group box."""
+        self.add(key, w.isChecked, w.setChecked, w.toggled)
+
+    def combo(self, key, w, by_text=False):
+        if by_text:
+            self.add(key, w.currentText, lambda v: w.setCurrentIndex(max(0, w.findText(v))), w.currentIndexChanged)
+        else:
+            self.add(key, w.currentData, lambda v: w.setCurrentIndex(max(0, w.findData(v))), w.currentIndexChanged)
+
+    @contextmanager
+    def quiet(self):
+        """Change controls without it counting as the user's change."""
+        old, self.writing = self.writing, True
+        try:
+            yield
+        finally:
+            self.writing = old
+
+    def write(self, opts: dict):
+        with self.quiet():
+            for key, (_, put) in self.fields.items():
+                if key in opts:
+                    put(opts[key])
 
 
 def card(layout_cls=QVBoxLayout, margins=(14, 12, 14, 12), spacing=8):
