@@ -216,6 +216,7 @@ class MediaInfo:
     fps: float = 0.0
     pix_fmt: str = ""
     audio: List[AudioTrack] = field(default_factory=list)
+    trimmer_tag: str = ""                  # Trimmer's own "Trimmer: ..." comment tag, "" when absent
 
     @property
     def resolution(self) -> str:
@@ -242,9 +243,9 @@ def probe(path, use_cache: bool = True) -> MediaInfo:
 
     cmd = [ffprobe_bin(), "-v", "error",
            "-show_entries",
-           "format=duration,size,bit_rate,format_name,start_time:"
+           "format=duration,size,bit_rate,format_name,start_time:format_tags=comment:"
            "stream=index,codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,"
-           "pix_fmt,channels,sample_rate,bit_rate:stream_tags=title,language,handler_name:"
+           "pix_fmt,channels,sample_rate,bit_rate:stream_tags=title,language,handler_name,comment:"
            "stream_disposition=attached_pic",
            "-of", "json", str(path)]
     try:
@@ -268,9 +269,16 @@ def probe(path, use_cache: bool = True) -> MediaInfo:
     info.size = int(fmt.get("size") or st.st_size)
     info.bit_rate = int(fmt.get("bit_rate") or 0)
     info.format_name = fmt.get("format_name", "")
+    for k, v in (fmt.get("tags") or {}).items():       # key case differs between containers
+        if k.lower() == "comment" and str(v).startswith("Trimmer:"):
+            info.trimmer_tag = str(v)
     for s in data.get("streams", []):
         kind = s.get("codec_type")
         tags = s.get("tags") or {}
+        if not info.trimmer_tag:       # Ogg/Opus keep the comment on the stream, not the container
+            for k, v in tags.items():
+                if k.lower() == "comment" and str(v).startswith("Trimmer:"):
+                    info.trimmer_tag = str(v)
         if kind == "video" and not info.has_video:
             if (s.get("disposition") or {}).get("attached_pic"):
                 continue

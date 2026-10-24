@@ -7,6 +7,9 @@ the running app to the taskbar.
 """
 
 import runpy
+import sys
 from pathlib import Path
+
+sys.dont_write_bytecode = True      # no __pycache__ folders in the Trimmer folder
 
 runpy.run_path(str(Path(__file__).resolve().parent / "trimmer.py"), run_name="__main__")

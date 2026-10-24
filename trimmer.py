@@ -5,6 +5,9 @@ Or double-click Trimmer.pyw to start it without a console window.
 """
 
 import sys
+
+sys.dont_write_bytecode = True      # no __pycache__ folders in the Trimmer folder
+
 from pathlib import Path
 
 ICON = Path(__file__).resolve().parent / "trimmer" / "gui" / "assets" / "trimmer.ico"

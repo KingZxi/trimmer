@@ -25,12 +25,19 @@ from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton  # noqa: E402
 
 from trimmer.core.jobs import JobOptions  # noqa: E402
+from trimmer.core.journal import clear_queue, load_queue  # noqa: E402
+from trimmer.core.session import clear_session, load_session, session_path  # noqa: E402
 from trimmer.core.settings import AppSettings  # noqa: E402
+from trimmer.gui import main_window  # noqa: E402
 from trimmer.gui.main_window import MainWindow  # noqa: E402
 from trimmer.gui.settings_dialog import SettingsDialog  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+# The queue warnings open a real dialog; these older tests queue the same file
+# twice on purpose, so they answer "add anyway" (tests/test_warnings.py covers the dialogs).
+from trimmer.gui import queue_checks  # noqa: E402
+queue_checks.ask = lambda *a, **k: ("anyway", False)
 
 
 def pump(sec, cond=lambda: False):
@@ -115,6 +122,7 @@ def test_settings_cancel_and_restore():
     pump(30, lambda: w.queue.items[0].status != "running")
     assert w.queue.items[0].status == "cancelled"
     pump(60, lambda: (w.queue.items[1].fraction or 0) > 0.02)
+    w.queue.auto_start.setChecked(False)        # a restored queue only starts by itself if this is on
     w.close()           # quitting mid-job: the job must be offered again
     pump(1)
     assert not out.exists() or not any(out.iterdir())
@@ -473,3 +481,169 @@ def test_shift_click_tick_toggles_all_sessions(monkeypatch):
     w.merge.queue()
     assert len(w.queue.items) == before + 2
     w.close()
+
+
+def test_merge_tab_track_options():
+    fx.shared_replays(WORK / "tracks_rep")
+    w = window(WORK / "tracks_out")
+    m = w.merge
+    w.tabs.setCurrentWidget(m)
+    w._route([str(WORK / "tracks_rep")])
+    pump(30, lambda: m.sessions)
+    assert [c.text() for c in m.keep_checks] == ["1: Mic", "2: Desktop"]
+    assert all(c.isChecked() for c in m.keep_checks) and not any(c.isChecked() for c in m.rip_checks)
+    assert m.g_out.isChecked() and not m.g_rip.isChecked() and not m.mix_keep.isEnabled()
+    assert m.g_out.title() == "Save the merged video"
+    m.r_trim.setChecked(True)
+    assert m.g_out.title() == "Save the trimmed videos"
+    m.r_merge.setChecked(True)
+    assert m.g_out.title() == "Save the merged video"
+
+    sent = []
+    m.queue_jobs.connect(sent.append)
+    m.g_out.setChecked(False)
+    m.g_rip.setChecked(True)
+    m.rip_checks[1].setChecked(True)
+    m.rip_video.setChecked(True)
+    m.queue()
+    job = sent[-1][0]
+    assert len(sent[-1]) == 1 and job.kind == "merge"
+    assert (job.make_video, job.rip_audio_tracks, job.rip_video) == (False, [1], True)
+    assert job.audio_tracks is None and job.mix_tracks is None and not job.compress
+    assert job.options.rip_format == m.rip_fmt.currentData()
+
+    m.g_out.setChecked(True)
+    m.g_rip.setChecked(False)
+    m.keep_checks[0].setChecked(False)
+    m.queue()
+    job = sent[-1][0]
+    assert (job.make_video, job.audio_tracks, job.rip_audio_tracks, job.rip_video) == (True, [1], [], False)
+
+    m.keep_checks[0].setChecked(True)
+    m.mix.setChecked(True)
+    m.mix_keep.setChecked(False)
+    m.queue()
+    job = sent[-1][0]
+    assert job.mix_tracks == [0, 1] and job.keep_mixed_originals is False and job.audio_tracks is None
+    w.close()
+
+
+def test_savings_edit_dialog():
+    from trimmer.gui.settings_dialog import SavingsEditDialog
+    d = SavingsEditDialog(3 * 1024 ** 3)
+    assert d.unit.currentText() == "GB" and abs(d.amount.value() - 3) < 1e-9
+    d.unit.setCurrentIndex(0)                       # MB keeps the same amount
+    assert abs(d.amount.value() - 3072) < 1e-6 and d.value() == 3 * 1024 ** 3
+    d.amount.setValue(512)
+    assert d.value() == 512 * 1024 ** 2
+
+
+def test_save_state_on_close_restores_everything(monkeypatch):
+    (WORK / "ss_src").mkdir()
+    clip_a = fx.single_clip(WORK / "ss_src")
+    clip_b = WORK / "ss_src" / "second.mp4"
+    shutil.copy(clip_a, clip_b)
+    with open(clip_b, "ab") as f:
+        f.write(b"\0" * 64)            # a different clip, as far as the duplicate check goes
+    rep = WORK / "ss_rep"
+    fx.shared_replays(rep)
+    w = window(WORK / "ss_out")
+    w.queue.auto_start.setChecked(False)
+    w._route([str(clip_a), str(clip_b)])
+    pump(15, lambda: len(w.clips.entries) == 2)
+    w.clips.entries[0].segments = [(2.0, 8.0), (10.0, 12.5)]
+    w.clips.entries[1].out_name = "Second take"
+    w.clips.table.selectRow(1)
+    w.tabs.setCurrentWidget(w.merge)
+    w._route([str(rep)])
+    pump(30, lambda: w.merge.sessions)
+    tree = w.merge.tree
+    tree.topLevelItem(0).setCheckState(0, Qt.Unchecked)
+    tree.topLevelItem(1).setCheckState(0, Qt.Checked)
+    tree.topLevelItem(1).setText(3, "Clutch round")      # _name_changed stores the custom name
+    assert tree.topLevelItem(1).data(3, Qt.UserRole) == "Clutch round"
+    w.clips.table.selectRow(1)
+    w.queue.add_jobs(w.clips.build_jobs(w.clips.entries[:1]), start=False)
+    n_paths = len(w.merge.paths)
+    w.close()
+    assert session_path().exists() and load_queue() == []
+
+    w2 = window(WORK / "ss_out")
+    w2.queue.auto_start.setChecked(False)
+    pump(30, lambda: len(w2.clips.entries) == 2 and w2.merge.sessions)
+    assert not session_path().exists()
+    by_name = {e.path.name: e for e in w2.clips.entries}
+    assert by_name[clip_a.name].segments == [(2.0, 8.0), (10.0, 12.5)]
+    assert by_name[clip_b.name].out_name == "Second take"
+    assert "Second take" in w2.clips.table.item(w2.clips.entries.index(by_name[clip_b.name]), 0).text()
+    pump(5, lambda: [e.path.name for e in w2.clips.selected_entries()] == [clip_b.name])
+    assert [e.path.name for e in w2.clips.selected_entries()] == [clip_b.name]
+    t2 = w2.merge.tree
+    assert len(w2.merge.paths) == n_paths
+    assert [t2.topLevelItem(i).checkState(0) for i in range(2)] == [Qt.Unchecked, Qt.Checked]
+    assert t2.topLevelItem(1).data(3, Qt.UserRole) == "Clutch round"
+    assert t2.topLevelItem(1).text(3) == "Clutch round"
+    assert [i.status for i in w2.queue.items] == ["queued"]
+    assert w2.queue.items[0].job.source == str(clip_a)
+    w2.settings.on_close = "discard"
+    w2.close()
+    assert not session_path().exists() and load_queue() == []
+
+
+def test_close_without_saving_leaves_nothing(monkeypatch):
+    (WORK / "ds_src").mkdir()
+    clip = fx.single_clip(WORK / "ds_src")
+    w = window(WORK / "ds_out")
+    w.queue.auto_start.setChecked(False)
+    w._route([str(clip)])
+    pump(15, lambda: w.clips.entries)
+    w.queue.add_jobs(w.clips.build_jobs(w.clips.entries), start=False)
+    assert load_queue()
+    monkeypatch.setattr(main_window, "ask_close_choice", lambda parent: ("discard", True))
+    w.close()
+    assert w.settings.on_close == "discard"          # "Remember my choice"
+    assert AppSettings.load().on_close == "discard"
+    assert not session_path().exists() and load_queue() == []
+    w2 = window(WORK / "ds_out")                     # no "Unfinished queue" offer, nothing restored
+    assert not w2.clips.entries and not w2.queue.items
+    w2.close()
+
+
+def test_close_cancel_and_nothing_to_save(monkeypatch):
+    (WORK / "cc_src").mkdir()
+    clip = fx.single_clip(WORK / "cc_src")
+    w = window(WORK / "cc_out")
+    w.settings.on_close = "ask"
+    asked = []
+    monkeypatch.setattr(main_window, "ask_close_choice", lambda parent: asked.append(1) or ("cancel", False))
+    w._route([str(clip)])
+    pump(15, lambda: w.clips.entries)
+    assert not w.close()                              # cancelled: window stays
+    assert asked and not session_path().exists()
+    w.clips.clear()
+    asked.clear()
+    assert w.close() and not asked                    # nothing open: no question
+    assert not session_path().exists()
+
+
+def test_save_state_skips_missing_files(monkeypatch):
+    (WORK / "mf_src").mkdir()
+    keep = fx.single_clip(WORK / "mf_src")
+    gone = WORK / "mf_src" / "gone.mp4"
+    shutil.copy(keep, gone)
+    with open(gone, "ab") as f:
+        f.write(b"\0" * 32)
+    w = window(WORK / "mf_out")
+    w._route([str(keep), str(gone)])
+    pump(15, lambda: len(w.clips.entries) == 2)
+    w.close()
+    assert session_path().exists()
+    gone.unlink()
+    shown = []
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: shown.append(a[2])))
+    w2 = window(WORK / "mf_out")
+    pump(15, lambda: w2.clips.entries)
+    assert [e.path.name for e in w2.clips.entries] == [keep.name]
+    assert len(shown) == 1 and "gone.mp4" in shown[0]
+    assert not session_path().exists()
+    w2.close()

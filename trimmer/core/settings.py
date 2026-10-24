@@ -41,6 +41,8 @@ class AppSettings:
     show_peek: bool = True                # waveform + thumbnails on the trim timeline
     rip_format: str = "copy"
     count_kept_savings: bool = False      # also count space saved when originals are kept
+    warn_duplicate_jobs: bool = True      # ask before queueing a job that's already queued or done
+    warn_already_processed: bool = True   # ask before redoing work a file already went through
     # Compression
     encode: dict = field(default_factory=lambda: EncodeSettings().to_dict())
     presets: dict = field(default_factory=default_presets)
@@ -62,6 +64,7 @@ class AppSettings:
     # Tools and UI
     ffmpeg_dir: str = ""
     theme: str = "dark"
+    on_close: str = "ask"                 # ask | save | discard what is open when closing
     ui: dict = field(default_factory=dict)
 
     @classmethod
@@ -103,6 +106,8 @@ class AppSettings:
         s.encode = EncodeSettings.from_dict(s.encode).to_dict()
         if s.conflict_policy not in ("ask", "rename", "overwrite", "skip"):
             s.conflict_policy = "ask"
+        if s.on_close not in ("ask", "save", "discard"):
+            s.on_close = "ask"
         return s
 
     def _import_old_merge_settings(self):

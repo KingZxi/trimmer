@@ -66,9 +66,12 @@ class SettingsDialog(QDialog):
         self.count_kept.setChecked(s.count_kept_savings)
         f.addRow("", self.count_kept)
         self.savings_info = label(savings.summary_text(), "muted")
+        b_edit = QPushButton("Edit…")
+        b_edit.setToolTip("Set the space saved total yourself")
+        b_edit.clicked.connect(lambda: self._edit_savings())
         b_reset = QPushButton("Reset")
         b_reset.clicked.connect(lambda: self._reset_savings())
-        f.addRow("Space saved", hbox(self.savings_info, "stretch", b_reset, stretch_end=False))
+        f.addRow("Space saved", hbox(self.savings_info, "stretch", b_edit, b_reset, stretch_end=False))
         self.suffix = QLineEdit(s.name_suffix)
         self.suffix.setPlaceholderText("e.g. _edit")
         f.addRow("Add to output names", self.suffix)
@@ -81,6 +84,12 @@ class SettingsDialog(QDialog):
         self.qlabel = QCheckBox("Add compression details to compressed file names, e.g. (LOSSY), (CQ28, H265 NVENC)")
         self.qlabel.setChecked(s.add_quality_label)
         f.addRow("", self.qlabel)
+        self.warn_dup = QCheckBox("Warn when a job is already in the queue or finished")
+        self.warn_dup.setChecked(s.warn_duplicate_jobs)
+        f.addRow("", self.warn_dup)
+        self.warn_done = QCheckBox("Warn when a file looks already trimmed, compressed or merged by Trimmer")
+        self.warn_done.setChecked(s.warn_already_processed)
+        f.addRow("", self.warn_done)
         self.container = QComboBox()
         for text, key in (("Same as the original (MP4/MKV/MOV, others become MP4)", "same"),
                            ("Always MP4", ".mp4"), ("Always MKV", ".mkv")):
@@ -120,6 +129,12 @@ class SettingsDialog(QDialog):
         self.theme.addItem("Light", "light")
         self.theme.setCurrentIndex(max(0, self.theme.findData(s.theme)))
         f.addRow("Theme", self.theme)
+        self.on_close = QComboBox()
+        for text, key in (("Ask me", "ask"), ("Save it and restore it next time", "save"),
+                          ("Close without saving", "discard")):
+            self.on_close.addItem(text, key)
+        self.on_close.setCurrentIndex(max(0, self.on_close.findData(s.on_close)))
+        f.addRow("On close", self.on_close)
         f.addRow("Settings and logs", QLabel(str(app_data_dir())))
         return w
 
@@ -251,6 +266,12 @@ class SettingsDialog(QDialog):
             savings.reset()
             self.savings_info.setText(savings.summary_text())
 
+    def _edit_savings(self):
+        d = SavingsEditDialog(savings.load().saved_bytes, self)
+        if d.exec() == QDialog.Accepted:
+            savings.set_saved(d.value())
+            self.savings_info.setText(savings.summary_text())
+
     def _save(self):
         s = self.s
         enc = self.enc.settings()
@@ -266,6 +287,8 @@ class SettingsDialog(QDialog):
         s.add_operation_tags = self.tags.isChecked()
         s.prefill_names = self.prefill.isChecked()
         s.add_quality_label = self.qlabel.isChecked()
+        s.warn_duplicate_jobs = self.warn_dup.isChecked()
+        s.warn_already_processed = self.warn_done.isChecked()
         s.container = self.container.currentData()
         s.exact_cuts = self.exact.isChecked()
         s.smart_cut = self.smart.isChecked()
@@ -273,6 +296,7 @@ class SettingsDialog(QDialog):
         s.rip_format = self.rip.currentData()
         s.ffmpeg_dir = self.ffdir.text().strip()
         s.theme = self.theme.currentData()
+        s.on_close = self.on_close.currentData()
         s.encode = enc.to_dict()
         s.presets = self.presets
         s.max_gap = self.gap.value()
@@ -328,3 +352,43 @@ class TipsDialog(QDialog):
         bb.rejected.connect(self.reject)
         bb.accepted.connect(self.accept)
         lay.addWidget(bb)
+
+
+class SavingsEditDialog(QDialog):
+    """Asks for a new space saved total in MB, GB or TB."""
+
+    UNITS = (("MB", 1024 ** 2), ("GB", 1024 ** 3), ("TB", 1024 ** 4))
+
+    def __init__(self, current_bytes, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit space saved")
+        lay = QVBoxLayout(self)
+        lay.addWidget(label("Set the total yourself, for example to count clips you deleted outside Trimmer.\n"
+                            "New jobs keep adding to it as usual.", "muted"))
+        self.amount = QDoubleSpinBox()
+        self.amount.setDecimals(2)
+        self.amount.setRange(-1_000_000, 1_000_000)
+        self.amount.setMinimumWidth(130)
+        self.unit = QComboBox()
+        for name, mult in self.UNITS:
+            self.unit.addItem(name, mult)
+        big = abs(current_bytes) >= 1024 ** 4
+        small = abs(current_bytes) < 1024 ** 3
+        self.unit.setCurrentIndex(2 if big else 0 if small else 1)
+        self.amount.setValue(current_bytes / self.unit.currentData())
+        self._mult = self.unit.currentData()
+        self.unit.currentIndexChanged.connect(lambda _: self._unit_changed())
+        lay.addWidget(hbox(label("Space saved", "muted"), self.amount, self.unit))
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def _unit_changed(self):
+        # keep the same amount of space when switching units
+        new = self.unit.currentData()
+        self.amount.setValue(self.amount.value() * self._mult / new)
+        self._mult = new
+
+    def value(self) -> int:
+        return round(self.amount.value() * self.unit.currentData())

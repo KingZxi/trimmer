@@ -28,8 +28,11 @@ from .ffmpeg import CancelToken, Cancelled, FFmpegError, Progress
 from .render import (AudioPlan, Span, copy_compatible, output_ext, render, rip_audio,
                      snap_spans_to_keyframes, verify_output)
 from .smartcut import SmartCutError, smart_render
+from .tag import build_tag, describe_encode, tag_args
 from .util import (VIDEO_EXTENSIONS, format_hms_ms, format_size, recycle_or_delete, safe_unlink, same_file,
                    sanitize_filename, unique_path)
+
+VIDEO_ONLY = " - video only"      # name extra of the video-only rip
 
 # Used when a cut must be frame-exact but the user didn't ask to compress:
 # high quality H.264, same as the old merger's defaults.
@@ -137,6 +140,9 @@ class MergeJob:
     audio_tracks: Optional[List[int]] = None
     mix_tracks: Optional[List[int]] = None
     keep_mixed_originals: bool = True
+    make_video: bool = True                      # the merged (or trimmed) video files
+    rip_audio_tracks: List[int] = field(default_factory=list)
+    rip_video: bool = False
     title_text: str = ""
     options: JobOptions = field(default_factory=JobOptions)
     output_name: str = ""                        # merged file (or trim-mode folder) name
@@ -154,6 +160,16 @@ class MergeJob:
         bits = [self.options.merge_mode]
         if self.compress:
             bits.append("compress")
+        if self.make_video and self.audio_tracks == []:
+            bits.append("no audio")
+        if self.mix_tracks:
+            bits.append("mix audio")
+        if not self.make_video:
+            bits.append("no video file")
+        if self.rip_audio_tracks:
+            bits.append(f"rip {len(self.rip_audio_tracks)} audio")
+        if self.rip_video:
+            bits.append("rip video")
         if self.options.delete_originals:
             bits.append("delete originals")
         return ", ".join(bits)
@@ -295,6 +311,38 @@ def _tags(job: ClipJob, trimmed: bool) -> str:
     return f" ({', '.join(t)})" if t else ""
 
 
+def _clip_tag(job: ClipJob, info, audio: AudioPlan, enc=None, q=None, video_only: bool = False) -> str:
+    """The hidden Trimmer tag for a clip job's video output. `enc` is only
+    passed when the output really is compressed."""
+    ops = []
+    if job.segments:
+        ops.append("trimmed")
+    if enc is not None:
+        ops.append(f"compressed ({describe_encode(enc, q)})")
+    if video_only:
+        ops.append("video only")
+    else:
+        if len([t for t in (audio.mix or []) if t in audio.selected(len(info.audio))]) >= 2:
+            ops.append("mixed audio")
+        if audio.tracks is not None and len(audio.selected(len(info.audio))) < len(info.audio):
+            ops.append("removed audio tracks")
+    return build_tag(info.trimmer_tag, ops)
+
+
+def _merge_tag(job: MergeJob, previous: str, audio: AudioPlan, n_tracks: int, enc=None, q=None) -> str:
+    """The hidden Trimmer tag for an output of a replay session. `enc` is
+    only passed when the output really is compressed."""
+    ops = ["trimmed replay session" if job.options.merge_mode == "trim" else "merged (replay session)"]
+    if enc is not None:
+        ops.append(f"compressed ({describe_encode(enc, q)})")
+    sel = audio.selected(n_tracks)
+    if len([t for t in (audio.mix or []) if t in sel]) >= 2:
+        ops.append("mixed audio")
+    if audio.tracks is not None and len(sel) < n_tracks:
+        ops.append("removed audio tracks")
+    return build_tag(previous, ops)
+
+
 def _check_space(folder: Path, need: int):
     try:
         free = shutil.disk_usage(folder).free
@@ -394,7 +442,8 @@ def _write_video(job: ClipJob, ctx: JobContext, info, spans: List[Span], out_dir
     claimed = None
     if needs_exact and opts.smart_cut:
         claimed = _claim(out_dir / f"{stem}{_tags(job, trimmed)}{name_extra}{ext}", ctx, opts, [src])
-        done = _write_smart(job, ctx, info, spans, claimed, audio)
+        done = _write_smart(job, ctx, info, spans, claimed, audio,
+                            _clip_tag(job, info, audio, video_only=name_extra == VIDEO_ONLY))
         if done is not None:
             return done
     if needs_exact:
@@ -416,6 +465,7 @@ def _write_video(job: ClipJob, ctx: JobContext, info, spans: List[Span], out_dir
         final = claimed or _claim(out_dir / f"{stem}{_tags(job, trimmed)}{name_extra}{label}{ext}",
                                   ctx, opts, [src])
         part = _part(final)
+        tag = _clip_tag(job, info, audio, enc if job.compress else None, q, name_extra == VIDEO_ONLY)
         original_equiv = int(info.size * (kept / info.duration)) if info.duration else info.size
         limit = original_equiv if (job.compress and enc.revert_if_larger) else None
         r = None
@@ -428,7 +478,8 @@ def _write_video(job: ClipJob, ctx: JobContext, info, spans: List[Span], out_dir
                 r = ff.RunResult("too_large", "", guess)
         if r is None:
             r = render(spans, part, encode=enc, quality=q, audio=audio,
-                       on_progress=ctx.reporter("Encoding"), cancel=ctx.cancel, size_limit=limit, log=ctx.log)
+                       on_progress=ctx.reporter("Encoding"), cancel=ctx.cancel, size_limit=limit, log=ctx.log,
+                       tag=tag)
         if r.status == "too_large":
             ctx.log(f"Compressed output would be larger than the original ({format_size(r.last_size)} vs "
                     f"{format_size(original_equiv)}); keeping the original footage instead.")
@@ -436,7 +487,7 @@ def _write_video(job: ClipJob, ctx: JobContext, info, spans: List[Span], out_dir
             final = _claim(out_dir / f"{stem}{_tags(job, trimmed)}{name_extra} (NOT COMPRESSED){ext}",
                            ctx, opts, [src])
             return _write_copy(job, ctx, info, [Span(s.path, s.info, s.start, s.end) for s in spans],
-                               final, audio, res)
+                               final, audio, res, _clip_tag(job, info, audio, video_only=name_extra == VIDEO_ONLY))
         if not r.ok:
             raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
         expected = kept
@@ -451,11 +502,12 @@ def _write_video(job: ClipJob, ctx: JobContext, info, spans: List[Span], out_dir
         return final
 
     final = _claim(out_dir / f"{stem}{_tags(job, trimmed)}{name_extra}{ext}", ctx, opts, [src])
-    return _write_copy(job, ctx, info, spans, final, audio, res)
+    return _write_copy(job, ctx, info, spans, final, audio, res,
+                       _clip_tag(job, info, audio, video_only=name_extra == VIDEO_ONLY))
 
 
 def _write_smart(job: ClipJob, ctx, info, spans: List[Span], final: Path,
-                 audio: AudioPlan) -> Optional[Path]:
+                 audio: AudioPlan, tag: str = "") -> Optional[Path]:
     """Frame-exact trim by smart cut. Returns the final path, or None when
     smart cut can't be used here (the caller then re-encodes the trim)."""
     src = Path(job.source)
@@ -463,7 +515,7 @@ def _write_smart(job: ClipJob, ctx, info, spans: List[Span], final: Path,
     ctx.stage("Smart cut")
     try:
         r = smart_render([Span(s.path, s.info, s.start, s.end) for s in spans], part, audio,
-                         on_progress=ctx.reporter("Smart cut"), cancel=ctx.cancel, log=ctx.log)
+                         on_progress=ctx.reporter("Smart cut"), cancel=ctx.cancel, log=ctx.log, tag=tag)
     except SmartCutError as e:
         safe_unlink(part)
         ctx.log(f"Smart cut not possible ({e}); re-encoding the trim instead.")
@@ -482,12 +534,13 @@ def _write_smart(job: ClipJob, ctx, info, spans: List[Span], final: Path,
 
 
 def _write_copy(job: ClipJob, ctx, info, spans: List[Span], final: Path, audio: AudioPlan,
-                res: JobResult) -> Path:
+                res: JobResult, tag: str = "") -> Path:
     src = Path(job.source)
     part = _part(final)
     want = [(s.start, s.end) for s in spans]
     whole = len(spans) == 1 and spans[0].start <= 0.0005 and spans[0].end is None
-    if whole and audio.tracks is None and not audio.needs_filter and final.suffix.lower() == src.suffix.lower():
+    if whole and audio.tracks is None and not audio.needs_filter and not tag \
+            and final.suffix.lower() == src.suffix.lower():
         ctx.stage("Copying")
         shutil.copyfile(src, part)
         ctx.cancel.check()
@@ -495,7 +548,7 @@ def _write_copy(job: ClipJob, ctx, info, spans: List[Span], final: Path, audio: 
         for note in snap_spans_to_keyframes(spans):
             ctx.log(note)
         r = render(spans, part, encode=None, quality=None, audio=audio,
-                   on_progress=ctx.reporter("Copying (no re-encode)"), cancel=ctx.cancel)
+                   on_progress=ctx.reporter("Copying (no re-encode)"), cancel=ctx.cancel, tag=tag)
         if not r.ok:
             raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
     ctx.stage("Verifying")
@@ -507,6 +560,30 @@ def _write_copy(job: ClipJob, ctx, info, spans: List[Span], final: Path, audio: 
         safe_unlink(part)
         raise FFmpegError(f"Output failed verification: {problem}")
     _finish(part, final, src)
+    return final
+
+
+def _write_rip(ctx: JobContext, opts: JobOptions, spans: List[Span], t: int, name: str, out_dir: Path,
+               sources: List[Path], date_source: Path) -> Path:
+    """One audio track of the spans as its own file, verified before it gets its name."""
+    fmt = opts.rip_format
+    if fmt == "copy" and len(spans) > 1:
+        fmt = "flac"     # joining several parts needs a re-encode; keep it lossless
+    ctx.stage(f"Ripping audio track {t + 1}")
+    tmp_base = out_dir / f"{name}.part"
+    ops = (["trimmed"] if any(s.start > 0.0005 or (s.end is not None and s.end < s.info.duration - 0.0005)
+                              for s in spans) else []) + ["audio rip"]
+    tag = build_tag(spans[0].info.trimmer_tag, ops)
+    r, tmp_path = rip_audio(spans, t, fmt, tmp_base, ctx.reporter(f"Ripping audio track {t + 1}"), ctx.cancel,
+                            tag=tag)
+    if not r.ok:
+        raise FFmpegError(f"ffmpeg failed ripping track {t + 1}:\n{r.stderr_tail}")
+    final = _claim(out_dir / f"{name}{tmp_path.suffix}", ctx, opts, sources)
+    problem = verify_output(tmp_path, sum(s.length for s in spans), expect_video=False, n_audio=1)
+    if problem:
+        safe_unlink(tmp_path)
+        raise FFmpegError(f"Track {t + 1} failed verification: {problem}")
+    _finish(tmp_path, final, date_source)
     return final
 
 
@@ -543,33 +620,14 @@ def run_clip_job(job: ClipJob, ctx: JobContext) -> JobResult:
                 out_dir, "", audio, res, label_cache)
     if job.rip_video and info.has_video:
         attempt(_write_video, job, ctx, info, [Span(s.path, s.info, s.start, s.end) for s in spans],
-                out_dir, " - video only", AudioPlan(tracks=[]), res, label_cache)
+                out_dir, VIDEO_ONLY, AudioPlan(tracks=[]), res, label_cache)
     for t in job.rip_audio_tracks:
         if t >= len(info.audio):
             continue
         tr = info.audio[t]
         name = sanitize_filename(f"{_base_stem(job, src)} - Track {t + 1}"
                                  + (f" ({tr.title})" if tr.title else ""))
-
-        def do_rip(t=t, name=name):
-            fmt = job.options.rip_format
-            if fmt == "copy" and len(spans) > 1:
-                fmt = "flac"     # joining several parts needs a re-encode; keep it lossless
-            ctx.stage(f"Ripping audio track {t + 1}")
-            tmp_base = out_dir / f"{name}.part"
-            r, tmp_path = rip_audio(spans, t, fmt, tmp_base, ctx.reporter(f"Ripping audio track {t + 1}"),
-                                    ctx.cancel)
-            if not r.ok:
-                raise FFmpegError(f"ffmpeg failed ripping track {t + 1}:\n{r.stderr_tail}")
-            final = _claim(out_dir / f"{name}{tmp_path.suffix}", ctx, job.options, [src])
-            problem = verify_output(tmp_path, sum(s.length for s in spans), expect_video=False, n_audio=1)
-            if problem:
-                safe_unlink(tmp_path)
-                raise FFmpegError(f"Track {t + 1} failed verification: {problem}")
-            _finish(tmp_path, final, src)
-            return final
-
-        attempt(do_rip)
+        attempt(_write_rip, ctx, job.options, spans, t, name, out_dir, [src], src)
 
     res.outputs = [str(p) for p in outputs]
     res.out_bytes = sum(p.stat().st_size for p in outputs if p.exists())
@@ -666,15 +724,14 @@ def _run_session(job: MergeJob, ctx: JobContext, session: mg.SessionPlan, out_ro
         merged_name = folder_name = sanitize_filename(custom_name)
         opts = JobOptions(**{**asdict(opts), "name_suffix": ""})
         job = replace(job, options=opts)
-    enc = _merge_encode(job)
-    audio = AudioPlan(tracks=job.audio_tracks, mix=job.mix_tracks, keep_originals=job.keep_mixed_originals)
 
     if len(session.clips) == 1:
         c = session.clips[0]
         ctx.log("Single clip in this session; nothing to merge.")
         cj = ClipJob(source=str(c.path), compress=job.compress, encode=job.encode,
                      audio_tracks=job.audio_tracks, mix_tracks=job.mix_tracks,
-                     keep_mixed_originals=job.keep_mixed_originals,
+                     keep_mixed_originals=job.keep_mixed_originals, make_video=job.make_video,
+                     rip_audio_tracks=job.rip_audio_tracks, rip_video=job.rip_video,
                      output_name=custom_name if opts.merge_mode != "trim" else "",
                      options=JobOptions(**{**asdict(opts), "delete_originals": False,
                                            "add_operation_tags": False}))
@@ -684,6 +741,20 @@ def _run_session(job: MergeJob, ctx: JobContext, session: mg.SessionPlan, out_ro
             cj.options.output_dir = str(d)
         r = run_clip_job(cj, ctx)
         return [Path(p) for p in r.outputs]
+
+    outputs = []
+    if job.make_video:
+        outputs = _build_session(job, ctx, session, out_root, merged_name, folder_name)
+    if job.rip_audio_tracks or job.rip_video:
+        outputs += _rip_session(job, ctx, session, out_root, merged_name, folder_name, outputs)
+    return outputs
+
+
+def _build_session(job, ctx, session: mg.SessionPlan, out_root, merged_name, folder_name) -> List[Path]:
+    """The merged video (or the trimmed videos) of a multi-clip session."""
+    opts = job.options
+    enc = _merge_encode(job)
+    audio = AudioPlan(tracks=job.audio_tracks, mix=job.mix_tracks, keep_originals=job.keep_mixed_originals)
 
     # 1) Exact packet matching, when the clips share encoded packets.
     if opts.use_packet_matching and opts.merge_method != "exact":
@@ -699,6 +770,70 @@ def _run_session(job: MergeJob, ctx: JobContext, session: mg.SessionPlan, out_ro
 
     # 2) Fallback: the old estimate + audio alignment + safety margins.
     return _fallback_session(job, ctx, session, out_root, merged_name, folder_name, enc, audio)
+
+
+def _rip_session(job: MergeJob, ctx: JobContext, session: mg.SessionPlan, out_root: Path, merged_name: str,
+                 folder_name: str, built: List[Path]) -> List[Path]:
+    """Audio and video-only rips of a multi-clip session: one set per merged
+    video, or per trimmed clip. They come from the real outputs when those
+    still hold every track untouched, else from a lossless copy of the join."""
+    opts = job.options
+    srcs = [c.path for c in session.clips]
+    date_src = session.clips[-1].path
+    dest = out_root / folder_name if opts.merge_mode == "trim" else out_root
+    outputs: List[Path] = []
+
+    def attempt(fn, *a):
+        try:
+            outputs.append(fn(*a))
+            ctx.log(f"Saved {outputs[-1].name}")
+        except _Skip as e:
+            ctx.log(str(e))
+
+    def rip_unit(path: Path, d: Path, stem: str):
+        ctx.cancel.check()
+        info = ff.probe(path, use_cache=False)
+        span = Span(path, info, 0.0, None)
+        for t in job.rip_audio_tracks:
+            if t >= len(info.audio):
+                continue
+            tr = info.audio[t]
+            name = sanitize_filename(f"{stem} - Track {t + 1}" + (f" ({tr.title})" if tr.title else ""))
+            attempt(_write_rip, ctx, opts, [span], t, name, d, srcs, date_src)
+        if job.rip_video and info.has_video:
+            def do_video():
+                ctx.stage("Ripping video")
+                final = _claim(d / f"{stem}{VIDEO_ONLY}{path.suffix}", ctx, opts, srcs)
+                part = _part(final)
+                r = render([Span(path, info, 0.0, None)], part, encode=None, quality=None,
+                           audio=AudioPlan(tracks=[]), on_progress=ctx.reporter("Ripping video"),
+                           cancel=ctx.cancel, log=ctx.log,
+                           tag=build_tag(info.trimmer_tag, ["video only"]))
+                if not r.ok:
+                    raise FFmpegError(f"ffmpeg failed ripping the video:\n{r.stderr_tail}")
+                problem = verify_output(part, info.duration, True, 0)
+                if problem:
+                    safe_unlink(part)
+                    raise FFmpegError(f"Video-only file failed verification: {problem}")
+                _finish(part, final, date_src)
+                return final
+            attempt(do_video)
+
+    if built and not job.compress and job.audio_tracks is None and not job.mix_tracks:
+        for p in built:
+            rip_unit(p, p.parent, p.stem)
+        return outputs
+    with tempfile.TemporaryDirectory(prefix="trimmer_rip_") as td:
+        ctx.stage("Preparing the tracks to rip")
+        plain = replace(job, compress=False, audio_tracks=None, mix_tracks=None, make_video=True,
+                        rip_audio_tracks=[], rip_video=False,
+                        options=JobOptions(**{**asdict(opts), "generate_clip_log": False, "name_suffix": "",
+                                              "delete_originals": False}))
+        made = _build_session(plain, ctx, session, Path(td), merged_name, folder_name)
+        dest.mkdir(parents=True, exist_ok=True)
+        for p in made:
+            rip_unit(p, dest, sanitize_filename(p.stem + opts.name_suffix))
+    return outputs
 
 
 def _packet_session(job, ctx, session, pj: pk.PacketJoin, out_root, merged_name, folder_name,
@@ -749,6 +884,7 @@ def _packet_output(job, ctx, pj: pk.PacketJoin, folder: Path, stem: str, ext: st
     final = _claim(folder / f"{sanitize_filename(stem + job.options.name_suffix)}{label}{ext}",
                    ctx, job.options, srcs)
     part = _part(final)
+    tag = _merge_tag(job, info.trimmer_tag, audio, n_avail, enc, q)
     args = ["-f", "concat", "-safe", "0", "-i", str(vlist)]
     a_in = 0
     if alist is not None and selected:
@@ -764,7 +900,7 @@ def _packet_output(job, ctx, pj: pk.PacketJoin, folder: Path, stem: str, ext: st
                          f"-metadata:s:a:{i}", f"handler_name={tr.title}"]
         if ext in (".mp4", ".mov"):
             args += ["-movflags", "+faststart"]
-        args += ["-y", str(part)]
+        args += tag_args(tag) + ["-y", str(part)]
         r = ff.run_ffmpeg(args, total, ctx.reporter(stage), ctx.cancel, output_path=part)
         if not r.ok:
             raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
@@ -822,7 +958,7 @@ def _packet_output(job, ctx, pj: pk.PacketJoin, folder: Path, stem: str, ext: st
         args += _track_meta_args(info, out_tracks, "Mixed")
         if ext in (".mp4", ".mov"):
             args += ["-movflags", "+faststart"]
-        args += ["-y", str(part)]
+        args += tag_args(tag) + ["-y", str(part)]
         r = ff.run_ffmpeg(args, total, ctx.reporter(stage), ctx.cancel, output_path=part)
         if not r.ok:
             raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
@@ -945,15 +1081,12 @@ def _fallback_session(job, ctx, session: mg.SessionPlan, out_root, merged_name, 
                            ctx, opts, srcs)
             part = _part(final)
             ctx.progress(f"Clip {i + 1} of {len(plan)}", Progress(None, 0, None, None, None))
-            if use_enc is None and cut <= 0.01 and audio.tracks is None and not audio.needs_filter \
-                    and final.suffix.lower() == c.path.suffix.lower():
-                shutil.copyfile(c.path, part)
-            else:
-                r = render([span], part, encode=use_enc, quality=q, audio=audio,
-                           on_progress=ctx.reporter(f"Clip {i + 1} of {len(plan)}"), cancel=ctx.cancel,
-                           log=ctx.log)
-                if not r.ok:
-                    raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
+            tag = _merge_tag(job, c.info.trimmer_tag, audio, len(c.info.audio), enc, q)
+            r = render([span], part, encode=use_enc, quality=q, audio=audio,
+                       on_progress=ctx.reporter(f"Clip {i + 1} of {len(plan)}"), cancel=ctx.cancel,
+                       log=ctx.log, tag=tag)
+            if not r.ok:
+                raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
             problem = verify_output(part, span.length, True, None)
             if problem:
                 safe_unlink(part)
@@ -1002,8 +1135,9 @@ def _fallback_session(job, ctx, session: mg.SessionPlan, out_root, merged_name, 
     final = _claim(out_root / f"{sanitize_filename(merged_name + opts.name_suffix)}{label}{ext}", ctx, opts, srcs)
     part = _part(final)
     total = sum(s.length for s in spans)
+    tag = _merge_tag(job, first.info.trimmer_tag, audio, len(first.info.audio), enc, q)
     r = render(spans, part, encode=use_enc, quality=q, audio=audio, on_progress=ctx.reporter("Merging"),
-               cancel=ctx.cancel, log=ctx.log, normalize_audio=use_enc is not None)
+               cancel=ctx.cancel, log=ctx.log, normalize_audio=use_enc is not None, tag=tag)
     if not r.ok:
         raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
     ctx.stage("Verifying")

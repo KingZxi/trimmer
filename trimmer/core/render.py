@@ -20,6 +20,7 @@ from . import ffmpeg as ff
 from .encode import (EncodeSettings, audio_bitrate_kbps, can_copy_audio, target_video_bitrate,
                      video_codec_args, video_filters)
 from .ffmpeg import CancelToken, MediaInfo, Progress, RunResult
+from .tag import tag_args
 
 AUDIO_RIP_FORMATS = {
     "copy": "Original (no re-encode)",
@@ -146,8 +147,8 @@ def render(spans: List[Span], out_path: Path, *, encode: Optional[EncodeSettings
            audio: AudioPlan, include_video: bool = True, mixed_label: str = "Mixed",
            on_progress: Callable[[Progress], None] = None, cancel: CancelToken = None,
            size_limit: int = None, log: Callable[[str], None] = None,
-           normalize_audio: bool = False) -> RunResult:
-    """Write `spans` (joined in order) to out_path.
+           normalize_audio: bool = False, tag: str = "") -> RunResult:
+    """Write `spans` (joined in order) to out_path, with `tag` as its hidden Trimmer tag.
 
     encode=None -> stream copy (spans must already be keyframe-snapped and
     stream-compatible; audio mix/volume still works, re-encoding audio only).
@@ -160,11 +161,11 @@ def render(spans: List[Span], out_path: Path, *, encode: Optional[EncodeSettings
 
     if encode is None:
         return _render_copy(spans, out_path, audio, include_video, mixed_label, total,
-                            on_progress, cancel, container)
+                            on_progress, cancel, container, tag)
 
     if encode.mode == "target_size":
         return _render_two_pass(spans, out_path, encode, audio, include_video, mixed_label, total,
-                                on_progress, cancel, container, log, normalize_audio)
+                                on_progress, cancel, container, log, normalize_audio, tag)
 
     args, maps_meta = _encode_inputs_and_filters(spans, encode, audio, include_video, normalize_audio)
     args += maps_meta["maps"]
@@ -174,12 +175,12 @@ def render(spans: List[Span], out_path: Path, *, encode: Optional[EncodeSettings
             args += ["-vf", ",".join(maps_meta["vf"])]
     args += _audio_codec_args(encode, maps_meta, container)
     args += _track_meta_args(first, maps_meta["out_tracks"], mixed_label)
-    args += _container_args(container) + ["-y", str(out_path)]
+    args += _container_args(container, tag) + ["-y", str(out_path)]
     return ff.run_ffmpeg(args, total, on_progress, cancel, size_limit=size_limit, output_path=out_path)
 
 
-def _container_args(container: str) -> List[str]:
-    a = ["-map_metadata", "-1", "-map_chapters", "-1"]
+def _container_args(container: str, tag: str = "") -> List[str]:
+    a = ["-map_metadata", "-1", "-map_chapters", "-1"] + tag_args(tag)
     if container in (".mp4", ".mov"):
         a += ["-movflags", "+faststart"]
     return a
@@ -339,7 +340,7 @@ def copy_audio_maps(first: MediaInfo, audio: AudioPlan, selected: List[int], con
 
 
 def _render_copy(spans, out_path, audio: AudioPlan, include_video, mixed_label, total,
-                 on_progress, cancel, container) -> RunResult:
+                 on_progress, cancel, container, tag: str = "") -> RunResult:
     first = spans[0].info
     n_avail = _common_track_count(spans)
     selected = audio.selected(n_avail)
@@ -363,12 +364,12 @@ def _render_copy(spans, out_path, audio: AudioPlan, include_video, mixed_label, 
         maps += amaps
         codec = (["-c:v", "copy"] if video else []) + acodec
         args += maps + codec + _track_meta_args(first, out_tracks, mixed_label)
-        args += ["-avoid_negative_ts", "make_zero"] + _container_args(container) + ["-y", str(out_path)]
+        args += ["-avoid_negative_ts", "make_zero"] + _container_args(container, tag) + ["-y", str(out_path)]
         return ff.run_ffmpeg(args, total, on_progress, cancel, output_path=out_path)
 
 
 def _render_two_pass(spans, out_path, encode, audio, include_video, mixed_label, total,
-                     on_progress, cancel, container, log, normalize_audio) -> RunResult:
+                     on_progress, cancel, container, log, normalize_audio, tag: str = "") -> RunResult:
     first = spans[0].info
     args, meta = _encode_inputs_and_filters(spans, encode, audio, include_video, normalize_audio)
     n_audio = len(meta["out_tracks"])
@@ -402,13 +403,13 @@ def _render_two_pass(spans, out_path, encode, audio, include_video, mixed_label,
             encode, first, bitrate_kbps=vkbps, pass_no=2 if two_pass else None,
             passlog="pass", container=container) + vf + enc_args
         p2 += _track_meta_args(first, meta["out_tracks"], mixed_label)
-        p2 += _container_args(container) + ["-y", str(Path(out_path).resolve())]
+        p2 += _container_args(container, tag) + ["-y", str(Path(out_path).resolve())]
         return ff.run_ffmpeg(p2, total, half(2) if two_pass else on_progress, cancel,
                              output_path=Path(out_path).resolve(), cwd=td)
 
 
 def rip_audio(spans: List[Span], track: int, fmt: str, out_base: Path,
-              on_progress=None, cancel: CancelToken = None) -> (RunResult, Path):
+              on_progress=None, cancel: CancelToken = None, tag: str = "") -> (RunResult, Path):
     """Extract one audio track (over the given spans) to its own file.
     Returns (result, actual output path)."""
     first = spans[0].info
@@ -441,7 +442,7 @@ def rip_audio(spans: List[Span], track: int, fmt: str, out_base: Path,
         args = inputs + ["-filter_complex", graph, "-map", "[a]"]
     else:
         args = inputs + ["-map", f"0:a:{track}"]
-    args += ["-vn"] + codec + ["-map_metadata", "-1"]
+    args += ["-vn"] + codec + ["-map_metadata", "-1"] + tag_args(tag)
     if tr.title:
         args += ["-metadata", f"title={tr.title}"]
     if ext in (".m4a",):

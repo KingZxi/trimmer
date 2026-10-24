@@ -150,6 +150,75 @@ def test_packet_merge_with_compress_single_pass(work):
     assert abs(ff.probe(f, use_cache=False).duration - 48.0) < 0.3
 
 
+# ---------------------------------------------------------------- replay rips
+
+def n_streams(path):
+    i = ff.probe(path, use_cache=False)
+    return len(i.audio), i.has_video, i.duration
+
+
+def test_merge_rips_without_the_merged_video(work):
+    clips = fx.shared_replays(work / "shared")
+    out = fresh(work, "out_merge_rips")
+    c, logs = ctx()
+    r = run_job(MergeJob([str(p) for p in clips[:4]], make_video=False, rip_audio_tracks=[1], rip_video=True,
+                         options=opts(out, rip_format="flac")), c)
+    assert r.status == "done", logs
+    assert not list(out.glob("*.mp4")) or all("video only" in f.name for f in out.glob("*.mp4"))
+    audio = list(out.glob("Merged * - Track 2 (Desktop).flac"))
+    assert len(audio) == 1, sorted(out.iterdir())
+    na, has_v, dur = n_streams(audio[0])
+    assert (na, has_v) == (1, False) and abs(dur - 48.0) < 0.2, dur
+    vids = list(out.glob("Merged * - video only.mp4"))
+    assert len(vids) == 1
+    na, has_v, dur = n_streams(vids[0])
+    assert (na, has_v) == (0, True) and abs(dur - 48.0) < 0.35, dur
+    assert len(r.outputs) == 2 and not list(out.glob("*.part*"))
+
+
+def test_merge_rips_straight_from_the_real_output(work):
+    clips = fx.shared_replays(work / "shared")
+    out = fresh(work, "out_merge_rips_direct")
+    c, logs = ctx()
+    r = run_job(MergeJob([str(p) for p in clips[:4]], rip_audio_tracks=[0],
+                         options=opts(out, rip_format="wav")), c)
+    assert r.status == "done", logs
+    assert not any("Preparing the tracks" in l for l in logs)
+    merged = next(out.glob("Merged*[0-9].mp4"))
+    assert n_streams(merged)[0] == 2
+    assert len(list(out.glob("Merged * - Track 1 (Mic).wav"))) == 1
+    assert len(r.outputs) == 2
+
+
+def test_trim_mode_rips_per_piece(work):
+    clips = fx.shared_replays(work / "shared")
+    out = fresh(work, "out_trim_rips")
+    c, logs = ctx()
+    r = run_job(MergeJob([str(p) for p in clips[:4]], audio_tracks=[0], rip_audio_tracks=[0],
+                         options=opts(out, merge_mode="trim", rip_format="flac")), c)
+    assert r.status == "done", logs
+    folder = next(out.glob("Session *"))
+    videos = sorted(f for f in folder.glob("*.mp4"))
+    rips = sorted(folder.glob("* - Track 1 (Mic).flac"))
+    assert len(videos) == 3 and len(rips) == 3, sorted(folder.iterdir())
+    assert all(n_streams(v)[0] == 1 for v in videos)
+    assert sorted(f.name.split(" - Track")[0] for f in rips) == sorted(v.stem for v in videos)
+    assert abs(sum(n_streams(f)[2] for f in rips) - 48.0) < 0.5
+    assert len(r.outputs) == 6
+
+
+def test_single_clip_session_passes_rips_through(work):
+    clips = fx.shared_replays(work / "shared")
+    out = fresh(work, "out_single_rips")
+    c, logs = ctx()
+    r = run_job(MergeJob([str(clips[4])], make_video=False, rip_audio_tracks=[1], rip_video=True,
+                         options=opts(out, rip_format="flac")), c)
+    assert r.status == "done", logs
+    names = sorted(Path(p).name for p in r.outputs)
+    assert len(names) == 2 and any("Track 2 (Desktop).flac" in n for n in names) \
+        and any(n.endswith("video only.mp4") for n in names), names
+
+
 # ---------------------------------------------------------------- fallback
 
 def test_fallback_merge_uses_audio_alignment(work):
@@ -555,3 +624,10 @@ def test_savings_recovers_from_corrupt_file_and_resets(stats):
     s = stats.record(JobResult(in_bytes=50, out_bytes=20, source_count=2))
     assert (s.reduction_bytes, s.jobs) == (30, 1)
     assert stats.reset().jobs == 0 and stats.load().reduction_bytes == 0
+
+
+def test_savings_set_by_hand(stats):
+    stats.reset()
+    s = stats.set_saved(5 * 1024 ** 3)
+    assert s.saved_bytes == 5 * 1024 ** 3 and stats.load().saved_bytes == 5 * 1024 ** 3
+    assert "5.0 GB" in stats.summary_text()

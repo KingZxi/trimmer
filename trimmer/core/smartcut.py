@@ -228,7 +228,7 @@ def count_frames(path: Path) -> int:
 
 def smart_render(spans: List[Span], out_path: Path, audio: AudioPlan, *, mixed_label: str = "Mixed",
                  on_progress: Callable[[Progress], None] = None, cancel: CancelToken = None,
-                 log: Callable[[str], None] = None) -> RunResult:
+                 log: Callable[[str], None] = None, tag: str = "") -> RunResult:
     """Write the spans (all from one source) to out_path by smart cut.
     Raises SmartCutError when smart cut can't be used or didn't verify."""
     log = log or (lambda m: None)
@@ -322,7 +322,7 @@ def smart_render(spans: List[Span], out_path: Path, audio: AudioPlan, *, mixed_l
         if props.tag in ("hvc1", "hev1", "avc1", "avc3") and container in (".mp4", ".mov"):
             codec += ["-tag:v", props.tag]
         args += maps + codec + _track_meta_args(info, out_tracks, mixed_label)
-        args += _container_args(container) + ["-y", str(out_path)]
+        args += _container_args(container, tag) + ["-y", str(out_path)]
         r = ff.run_ffmpeg(args, total, None, cancel, output_path=out_path)
         if not r.ok:
             return r

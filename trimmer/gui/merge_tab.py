@@ -9,7 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QFileDialog, QFrame,
-                               QGridLayout, QGroupBox, QLineEdit, QMessageBox, QProgressDialog, QPushButton,
+                               QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QProgressDialog, QPushButton,
                                QRadioButton, QSplitter, QTreeWidgetItem, QVBoxLayout,
                                QWidget)
 
@@ -18,12 +18,14 @@ from ..core import usage
 from ..core.encode import EncodeSettings
 from ..core import ffmpeg as ff
 from ..core.ffmpeg import CancelToken
+from ..core.render import AUDIO_RIP_FORMATS
 from ..core.jobs import JobContext, JobOptions, MergeJob, run_job, session_names
 from ..core.util import format_hms, format_hms_ms, parse_timecode, sanitize_filename
 from .theme import colour, set_kind
 from .widgets import HintTree, card, hbox, label
 from .folder_watch import FolderWatcher
 from .preview import PreviewDialog
+from .queue_checks import check_new_jobs
 from .worker import Task
 
 
@@ -159,6 +161,7 @@ class MergeTab(QWidget):
         self.paths = []
         self.sessions = []
         self.tasks = []
+        self._saved = []            # saved ticks and names, applied when detection finishes
         self.used = {}              # id(session) -> (ranges, "quick" | "exact" | "estimate")
         self.viewers = []           # open clip viewers
         self.watcher = FolderWatcher(parent=self)
@@ -225,33 +228,74 @@ class MergeTab(QWidget):
         lay.addWidget(split, 1)
 
         g = QGroupBox("For each ticked session")
-        gl = QGridLayout(g)
-        gl.setHorizontalSpacing(24)
-        gl.setVerticalSpacing(4)
+        gl = QVBoxLayout(g)
+        gl.setSpacing(8)
         self.r_merge = QRadioButton("Merge into one video")
         self.r_trim = QRadioButton("Keep separate, remove repeated footage")
         self.r_trim.toggled.connect(self._refresh_default_names)
+        self.r_trim.toggled.connect(self._retitle_out)
         self.method = QComboBox()
         self.method.addItem("Auto: exact lossless join when possible, otherwise re-encode", "auto")
         self.method.addItem("Lossless only (fail rather than re-encode)", "lossless")
         self.method.addItem("Always frame-exact re-encode", "exact")
+        gl.addWidget(hbox(self.r_merge, self.r_trim, "stretch", label("Method", "muted"), self.method,
+                          stretch_end=False))
+
+        self.g_out = QGroupBox("Save the merged video")
+        self.g_out.setCheckable(True)
+        self.g_out.setChecked(True)
+        ol = QVBoxLayout(self.g_out)
+        ol.setSpacing(4)
+        self.keep_box = QWidget()
+        self.keep_lay = QHBoxLayout(self.keep_box)
+        self.keep_lay.setContentsMargins(0, 0, 0, 0)
+        ol.addWidget(hbox(label("Audio tracks", "muted"), self.keep_box))
+        self.mix = QCheckBox("Mix kept tracks into one, so phones and Discord play all of them")
+        self.mix_keep = QCheckBox("Also keep the separate tracks")
+        self.mix_keep.setChecked(True)
+        self.mix.toggled.connect(self.mix_keep.setEnabled)
+        self.mix_keep.setEnabled(False)
+        ol.addWidget(self.mix)
+        indent = QWidget()
+        il = QHBoxLayout(indent)
+        il.setContentsMargins(25, 0, 0, 0)
+        il.addWidget(self.mix_keep)
+        ol.addWidget(indent)
         self.compress = QCheckBox("Compress in the same pass")
         self.preset = QComboBox()
         self.preset.setMinimumWidth(190)
         self.preset.setEnabled(False)
         self.compress.toggled.connect(self.preset.setEnabled)
-        self.mix = QCheckBox("Mix all audio tracks into one (keeps the separate tracks too)")
+        ol.addWidget(hbox(self.compress, self.preset))
+
+        self.g_rip = QGroupBox("Rip tracks to separate files")
+        self.g_rip.setCheckable(True)
+        self.g_rip.setChecked(False)
+        rl = QVBoxLayout(self.g_rip)
+        rl.setSpacing(4)
+        self.rip_box = QWidget()
+        self.rip_lay = QHBoxLayout(self.rip_box)
+        self.rip_lay.setContentsMargins(0, 0, 0, 0)
+        rl.addWidget(hbox(label("Audio tracks", "muted"), self.rip_box))
+        self.rip_fmt = QComboBox()
+        for k, text in AUDIO_RIP_FORMATS.items():
+            self.rip_fmt.addItem(text, k)
+        self.rip_video = QCheckBox("Video only (no audio)")
+        rl.addWidget(hbox(label("Format", "muted"), self.rip_fmt, "stretch", self.rip_video, stretch_end=False))
+        rl.addWidget(label("One file per session when merging, one per trimmed clip when keeping separate",
+                           "muted"))
+        rl.addStretch(1)
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        row.addWidget(self.g_out, 1)
+        row.addWidget(self.g_rip, 1)
+        gl.addLayout(row)
         self.info_file = QCheckBox("Write an info file showing where each clip landed")
         self.delete_orig = QCheckBox("Delete original clips once the result is saved and checked")
-        gl.addWidget(hbox(self.r_merge, self.r_trim), 0, 0)
-        gl.addWidget(hbox(label("Method", "muted"), self.method), 1, 0)
-        gl.addWidget(hbox(self.compress, self.preset), 2, 0)
-        gl.addWidget(self.mix, 0, 1)
-        gl.addWidget(self.info_file, 1, 1)
-        gl.addWidget(self.delete_orig, 2, 1)
-        gl.setColumnStretch(0, 1)
-        gl.setColumnStretch(1, 1)
+        gl.addWidget(hbox(self.info_file, self.delete_orig))
         lay.addWidget(g)
+        self.keep_checks, self.rip_checks = [], []
+        self._build_track_checks()
         self.b_queue = set_kind(QPushButton("Add ticked sessions to queue"), "primary")
         self.b_queue.clicked.connect(self.queue)
         lay.addWidget(hbox("stretch", self.b_queue, stretch_end=False))
@@ -262,6 +306,7 @@ class MergeTab(QWidget):
         (self.r_trim if s.merge_mode == "trim" else self.r_merge).setChecked(True)
         self.method.setCurrentIndex(max(0, self.method.findData(s.merge_method)))
         self.info_file.setChecked(s.generate_clip_log)
+        self.rip_fmt.setCurrentIndex(max(0, self.rip_fmt.findData(s.rip_format)))
         self.delete_orig.setChecked(s.delete_originals)
         cur = self.preset.currentText()
         self.preset.clear()
@@ -276,6 +321,7 @@ class MergeTab(QWidget):
         o.merge_method = self.method.currentData()
         o.generate_clip_log = self.info_file.isChecked()
         o.delete_originals = self.delete_orig.isChecked()
+        o.rip_format = self.rip_fmt.currentData()
         return o
 
     def add_paths(self, paths):
@@ -344,6 +390,7 @@ class MergeTab(QWidget):
         self.used = {}
         self.tree.clear()
         self.view.set_session(None)
+        self._build_track_checks()
 
     def detect(self):
         mopts = self._opts().merge_options()
@@ -371,6 +418,7 @@ class MergeTab(QWidget):
             it.setFlags(it.flags() | Qt.ItemIsEditable)
             it.setData(3, Qt.UserRole, "")
             it.setCheckState(0, Qt.Checked if len(s.clips) > 1 else Qt.Unchecked)
+            self._apply_saved(it, s)
             dropped = {id(c) for c in s.dropped}
             for c in s.clips:
                 note = []
@@ -381,13 +429,52 @@ class MergeTab(QWidget):
                 child = QTreeWidgetItem([c.path.name, "", format_hms(c.duration), "", "; ".join(note)])
                 it.addChild(child)
             self.tree.addTopLevelItem(it)
+        self._saved = [d for d in self._saved if not d.get("used")]
         self._refresh_default_names()
+        self._build_track_checks()
         if sessions:
             self.tree.setCurrentItem(self.tree.topLevelItem(0))
         msg = f"Found {len(sessions)} session(s) in {sum(len(s.clips) for s in sessions)} clip(s)."
         if skipped:
             msg += f" Skipped {len(skipped)} file(s) that couldn't be read."
         self.status.emit(msg)
+
+    # ---------------------------------------------------------- save state
+    @staticmethod
+    def _session_key(s):
+        return sorted(str(c.path) for c in s.clips)
+
+    def snapshot(self) -> dict:
+        """The loaded replays, and each session's tick and custom name, for the save state."""
+        sessions = []
+        for i, s in enumerate(self.sessions[:self.tree.topLevelItemCount()]):
+            it = self.tree.topLevelItem(i)
+            sessions.append({"clips": self._session_key(s), "checked": it.checkState(0) == Qt.Checked,
+                             "name": it.data(3, Qt.UserRole) or ""})
+        return {"paths": [str(p) for p in self.paths], "sessions": sessions}
+
+    def restore(self, data: dict) -> list:
+        """Re-add the saved replays; ticks and names are applied after detection.
+        Returns the paths that no longer exist."""
+        paths = [p for p in data.get("paths", []) if isinstance(p, str)]
+        found = [p for p in paths if Path(p).exists()]
+        self._saved = [dict(d) for d in data.get("sessions", []) if isinstance(d, dict)]
+        if found:
+            self.add_paths(found)
+        return [p for p in paths if p not in found]
+
+    def _apply_saved(self, it, s):
+        key = self._session_key(s)
+        for d in self._saved:
+            if d.get("clips") == key and not d.get("used"):
+                d["used"] = True
+                it.setCheckState(0, Qt.Checked if d.get("checked") else Qt.Unchecked)
+                name = d.get("name")
+                if isinstance(name, str) and name:
+                    it.setData(3, Qt.UserRole, name)
+                    it.setText(3, name)
+                    it.setForeground(3, colour("text"))
+                return
 
     # ---------------------------------------------------------- naming
     def _default_name(self, i, plain=False):
@@ -438,9 +525,11 @@ class MergeTab(QWidget):
         finally:
             self.tree.blockSignals(False)
         self.tree.viewport().update()
+        self._build_track_checks()
 
     def _name_changed(self, item, col):
         if col == 0 and item.parent() is None:
+            self._build_track_checks()
             # Shift-click on a session's tick: copy its new state to every session
             if QApplication.keyboardModifiers() & Qt.ShiftModifier:
                 self._set_all_checked(item.checkState(0))
@@ -628,6 +717,7 @@ class MergeTab(QWidget):
             return
         top = it if it.parent() is None else it.parent()
         i = self.tree.indexOfTopLevelItem(top)
+        self._build_track_checks()
         if 0 <= i < len(self.sessions):
             s = self.sessions[i]
             self.view.set_session(s)
@@ -641,6 +731,51 @@ class MergeTab(QWidget):
             mk = next((str(d.clip.path) for d in self.viewers if any(c is d.clip for c in s.clips)), None)
             if mk is None:
                 self.view.set_marker(None, 0)
+
+    def _retitle_out(self):
+        self.g_out.setTitle("Save the trimmed videos" if self.r_trim.isChecked() else "Save the merged video")
+
+    def _track_sessions(self):
+        """Sessions whose tracks the checkboxes describe: the ticked ones, else the selected one, else all."""
+        ticked = [s for i, s in enumerate(self.sessions)
+                  if self.tree.topLevelItem(i).checkState(0) == Qt.Checked]
+        if ticked:
+            return ticked
+        it = self.tree.currentItem()
+        if it is not None:
+            i = self.tree.indexOfTopLevelItem(it if it.parent() is None else it.parent())
+            if 0 <= i < len(self.sessions):
+                return [self.sessions[i]]
+        return list(self.sessions)
+
+    def _build_track_checks(self):
+        """One keep and one rip checkbox per audio track of the sessions in play, keeping ticks that still apply."""
+        old_keep = [c.isChecked() for c in self.keep_checks]
+        old_rip = [c.isChecked() for c in self.rip_checks]
+        for lay in (self.keep_lay, self.rip_lay):
+            while lay.count():
+                w = lay.takeAt(0).widget()
+                if w:
+                    w.deleteLater()
+        clips = [c for s in self._track_sessions() for c in s.clips]
+        ref = max((c.info.audio for c in clips), key=len, default=[])
+        n = len(ref)
+        self.keep_checks, self.rip_checks = [], []
+        for t in range(n):
+            text = f"{t + 1}: {ref[t].label}"
+            k = QCheckBox(text)
+            k.setChecked(old_keep[t] if t < len(old_keep) else True)
+            self.keep_lay.addWidget(k)
+            self.keep_checks.append(k)
+            rc = QCheckBox(text)
+            rc.setChecked(old_rip[t] if t < len(old_rip) else False)
+            self.rip_lay.addWidget(rc)
+            self.rip_checks.append(rc)
+        if n == 0:
+            self.keep_lay.addWidget(QLabel("(no audio)"))
+            self.rip_lay.addWidget(QLabel("(no audio)"))
+        self.keep_lay.addStretch(1)
+        self.rip_lay.addStretch(1)
 
     def encode_settings(self) -> EncodeSettings:
         name = self.preset.currentText()
@@ -657,6 +792,14 @@ class MergeTab(QWidget):
         if self.compress.isChecked() and enc.problems():
             QMessageBox.warning(self, "Compression settings", "\n".join(enc.problems()))
             return
+        keep = [i for i, c in enumerate(self.keep_checks) if c.isChecked()]
+        rips = [i for i, c in enumerate(self.rip_checks) if c.isChecked()] if self.g_rip.isChecked() else []
+        save_video = self.g_out.isChecked()
+        rip_video = self.g_rip.isChecked() and self.rip_video.isChecked()
+        if not save_video and not rips and not rip_video:
+            QMessageBox.information(self, "Nothing to do",
+                                    "Tick 'Save the merged video' or choose tracks to rip.")
+            return
         o = self._opts()
         if o.delete_originals:
             n = sum(len(s.clips) for s in chosen)
@@ -668,10 +811,16 @@ class MergeTab(QWidget):
         jobs = []
         for s in chosen:
             n_tracks = min(len(c.info.audio) for c in s.clips)
+            tracks = [t for t in keep if t < n_tracks]
             jobs.append(MergeJob(
-                clip_paths=[str(c.path) for c in s.clips], compress=self.compress.isChecked(),
-                encode=enc.to_dict(),
-                mix_tracks=list(range(n_tracks)) if self.mix.isChecked() and n_tracks >= 2 else None,
+                clip_paths=[str(c.path) for c in s.clips], make_video=save_video,
+                compress=save_video and self.compress.isChecked(), encode=enc.to_dict(),
+                audio_tracks=None if len(tracks) == n_tracks else tracks,
+                mix_tracks=tracks if self.mix.isChecked() and len(tracks) >= 2 else None,
+                keep_mixed_originals=self.mix_keep.isChecked(),
+                rip_audio_tracks=[t for t in rips if t < n_tracks], rip_video=rip_video,
                 title_text=f"Session {s.name}", options=JobOptions(**vars(o)),
                 output_name=self.tree.topLevelItem(self.sessions.index(s)).data(3, Qt.UserRole) or ""))
-        self.queue_jobs.emit(jobs)
+        jobs = check_new_jobs(self.main, jobs, {str(c.path): c.info for s in chosen for c in s.clips}, self)
+        if jobs:
+            self.queue_jobs.emit(jobs)

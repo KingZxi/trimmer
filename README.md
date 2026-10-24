@@ -88,6 +88,13 @@ the way the real merge would be (nothing is saved). Each session can then be:
 - **merged into one video**, or
 - **kept as separate clips** with the repeated footage removed.
 
+Like the Clips tab, the merged (or trimmed) videos can keep only some audio
+tracks, or mix them into one track so phones and Discord play every track.
+**Rip tracks to separate files** also saves chosen tracks as their own audio
+files (and/or a video-only file), one set per merged session, or one per trimmed
+clip when keeping them separate. You can untick **Save the merged video** to get
+only the rips.
+
 Tick "Write an info file" to get a text file next to each output that lists
 every clip: where it sits in the result, which part of the original was used,
 and where the original clip would have ended (in trim mode, which file and
@@ -119,10 +126,19 @@ Jobs run one at a time, top to bottom.
 - **Space saved** (bottom of the tab) is a running, approximate total of the
   disk space freed by jobs that deleted their originals, plus how much smaller
   all outputs are than their sources. If you delete originals yourself, turn on
-  "Count space saved even when originals are kept" in Settings. Reset it there.
+  "Count space saved even when originals are kept" in Settings. Edit or reset
+  the total there.
 
 A cancelled job never leaves a half-written file. If Trimmer closes or
 crashes, unfinished jobs are offered again the next time it starts.
+
+**Save state:** when you close Trimmer with clips in the Clips tab, replays in
+Replay merge or jobs left in the queue, it asks whether to save them. Saved,
+they come back on the next start: each clip's kept parts and output name, the
+replay sessions with their ticks and custom names, and the waiting jobs
+(started automatically only if "Start jobs automatically" is on). Tick
+"Remember my choice" or set **On close** in Settings to stop being asked.
+Files that have moved are skipped and listed.
 
 ## Safety
 
@@ -133,6 +149,12 @@ crashes, unfinished jobs are offered again the next time it starts.
   moves files to the Recycle Bin by default, and permanent delete is a setting.
 - An output can never overwrite its own source. Name clashes ask you what to
   do, or follow the rule you set in Settings.
+- Every video and audio file Trimmer saves carries a hidden note in its
+  comment metadata, such as `Trimmer: trimmed; then compressed (H.265, q28)`.
+  Processing a file again adds to it. Before queueing, Trimmer warns when a job
+  is already in the queue (or finished), or when a file looks already trimmed,
+  compressed or merged (by that note, or by Trimmer's name tags). Both warnings
+  can be turned off in Settings.
 - Settings, logs and crash reports are kept in `%APPDATA%\Trimmer`
   (`Logs` holds one log per run).
 
@@ -147,6 +169,7 @@ trimmer/core/           the engine (no Qt): probing, rendering, jobs
   packets.py            exact replay joins by matching encoded packets
   merge.py              grouping replays into sessions, the fallback join, info files
   jobs.py               what the queue runs, output checks, deleting originals
+  tag.py                the hidden "Trimmer:" tag and spotting work done twice
   encode.py             compression settings, auto quality, size prediction
   peek.py               waveform and thumbnails for the timeline
 trimmer/gui/            the PySide6 interface (one module per tab, plus widgets)

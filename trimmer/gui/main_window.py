@@ -8,12 +8,13 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import (QApplication, QFileDialog, QLabel, QMainWindow, QMessageBox,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QLabel, QMainWindow, QMessageBox,
                                QSizePolicy, QSystemTrayIcon, QTabWidget, QToolBar, QWidget)
 
 from ..core import ffmpeg as ff
 from ..core import jobs as J
 from ..core.journal import clear_queue, load_queue, save_queue
+from ..core.session import clear_session, load_session, save_session
 from ..core.settings import AppSettings
 from ..core.util import VIDEO_EXTENSIONS, find_video_files
 from .clips_tab import ClipsTab
@@ -33,6 +34,24 @@ def detect_encoders():
         if ff.encoder_works(name):
             found.append(key)
     return found
+
+
+def ask_close_choice(parent):
+    """Ask what to do with the open clips, replays and jobs. Returns
+    ("save" | "discard" | "cancel", remember_my_choice)."""
+    box = QMessageBox(QMessageBox.Question, "Save before closing?",
+                      "There are clips, replays or jobs still open. Save them so they are back "
+                      "the next time Trimmer starts?", parent=parent)
+    b_save = box.addButton("Save and close", QMessageBox.AcceptRole)
+    b_discard = box.addButton("Close without saving", QMessageBox.DestructiveRole)
+    box.addButton(QMessageBox.Cancel)
+    box.setDefaultButton(b_save)
+    remember = QCheckBox("Remember my choice (change it later in Settings)")
+    box.setCheckBox(remember)
+    box.exec()
+    clicked = box.clickedButton()
+    choice = "save" if clicked is b_save else "discard" if clicked is b_discard else "cancel"
+    return choice, remember.isChecked()
 
 
 class MainWindow(QMainWindow):
@@ -223,7 +242,45 @@ class MainWindow(QMainWindow):
         t.done.connect(found)
         self.tasks.append(t)
         t.start()
-        self._restore_queue()
+        if not self.restore_session():
+            self._restore_queue()
+
+    # ----------------------------------------------------------- save state
+    def restore_session(self) -> bool:
+        """Bring back what was saved on the last clean close. One-shot: the
+        file is deleted once it has been read."""
+        state = load_session()
+        if state is None:
+            return False
+        clear_session()
+        missing = []
+        clips, merge = state.get("clips"), state.get("merge")
+        if isinstance(clips, dict):
+            missing += self.clips.restore(clips)
+        if isinstance(merge, dict):
+            missing += self.merge.restore(merge)
+        jobs = []
+        for d in state.get("queue") or []:
+            try:
+                jobs.append(J.job_from_dict(d))
+            except (TypeError, ValueError, KeyError):
+                continue
+        for j in jobs:
+            missing += [p for p in j.sources() if not Path(p).exists()]
+        jobs = [j for j in jobs if all(Path(p).exists() for p in j.sources())]
+        clear_queue()
+        if jobs:
+            self.queue.add_jobs(jobs, start=True)
+        self._running(self.queue.is_running())
+        if clips and clips.get("entries"):
+            self.tabs.setCurrentWidget(self.clips)
+        if missing:
+            names = list(dict.fromkeys(missing))
+            QMessageBox.information(
+                self, "Some files are gone",
+                f"{len(names)} saved file(s) no longer exist and were skipped:\n\n"
+                + "\n".join(names[:12]) + (f"\n… and {len(names) - 12} more" if len(names) > 12 else ""))
+        return True
 
     def _restore_queue(self):
         saved = load_queue()
@@ -249,8 +306,21 @@ class MainWindow(QMainWindow):
         else:
             clear_queue()
 
+    def _close_choice(self, has_state: bool):
+        """save | discard | cancel, from the On close setting or by asking."""
+        if not has_state:
+            return "discard"
+        mode = self.settings.on_close
+        if mode in ("save", "discard"):
+            return mode
+        choice, remember = ask_close_choice(self)
+        if remember and choice in ("save", "discard"):
+            self.settings.on_close = choice
+        return choice
+
     def closeEvent(self, e):
-        if self.queue.is_running():
+        running = self.queue.is_running()
+        if running:
             ans = QMessageBox.question(
                 self, "Still working",
                 "A job is running. Stop it and quit? The partial file will be removed and waiting jobs "
@@ -258,11 +328,27 @@ class MainWindow(QMainWindow):
             if ans != QMessageBox.Yes:
                 e.ignore()
                 return
-            pending = [J.job_to_dict(i.job) for i in self.queue.items if i.status in ("queued", "running")]
+        # A running job that gets stopped counts as unfinished.
+        pending = [J.job_to_dict(i.job) for i in self.queue.items if i.status in ("queued", "running")]
+        choice = self._close_choice(bool(self.clips.entries or self.merge.paths or pending))
+        if choice == "cancel":
+            e.ignore()
+            return
+        if running:
             self.queue.closing = True
             self.queue.stop_all()
             self.queue.runner.wait(15000)
             save_queue(pending)
+        if choice == "save":
+            self.queue.closing = True       # the jobs live in the saved state now
+            saved = save_session({"clips": self.clips.snapshot(), "merge": self.merge.snapshot(),
+                                  "queue": pending})
+            if saved:
+                clear_queue()
+        else:
+            clear_session()
+            self.queue.closing = True
+            clear_queue()
         self.merge.watcher.stop()
         # Background look-ups (keyframes, waveform, thumbnails, probes) finish
         # in a moment; a thread destroyed while running can crash on exit.

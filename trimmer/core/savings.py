@@ -86,6 +86,15 @@ def record(result, count_kept: bool = False) -> Savings:
         return s
 
 
+def set_saved(saved_bytes: int) -> Savings:
+    """Set the space saved total by hand, e.g. to count files deleted outside Trimmer."""
+    with _lock:
+        s = load()
+        s.saved_bytes = int(saved_bytes)
+        _save(s)
+        return s
+
+
 def reset() -> Savings:
     with _lock:
         s = Savings()

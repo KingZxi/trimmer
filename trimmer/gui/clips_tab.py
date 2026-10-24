@@ -16,6 +16,7 @@ from ..core.encode import EncodeSettings, predict_size, resolve_quality
 from ..core.jobs import ClipJob, JobOptions
 from ..core.render import AUDIO_RIP_FORMATS
 from ..core.util import format_hms, format_hms_ms, format_size, sanitize_filename
+from .queue_checks import check_new_jobs
 from .theme import set_kind
 from .widgets import EncodeForm, HintTable, Timeline, TrackPicker, card, clearable, hbox, label
 
@@ -83,6 +84,8 @@ class ClipsTab(QWidget):
         self.fingerprints = {}
         self.current = None
         self.tasks = []
+        self._restore = {}            # path -> saved edit state, applied as the clips finish loading
+        self._restore_select = []
         self._build()
 
     # ------------------------------------------------------------- layout
@@ -359,6 +362,7 @@ class ClipsTab(QWidget):
                 long_paths += 1
             self.fingerprints[fp] = e
             self.entries.append(e)
+            self._apply_saved(e)
             self._add_row(e)
             added += 1
         msg = f"Added {added} clip(s)."
@@ -369,8 +373,49 @@ class ClipsTab(QWidget):
         if errors:
             msg += f" {len(errors)} file(s) couldn't be read: " + "; ".join(errors[:3])
         self.status.emit(msg)
+        if self._restore_select:
+            rows = [i for i, e in enumerate(self.entries) if str(e.path) in self._restore_select]
+            if rows:
+                self._restore_select = []
+                self.table.selectRow(rows[0])
         if added and not self.selected_entries():
             self.table.selectRow(self.table.rowCount() - added)
+
+    # ---------------------------------------------------------- save state
+    def snapshot(self) -> dict:
+        """The list and each clip's edits, for the save state."""
+        return {"entries": [{"path": str(e.path), "segments": [list(s) for s in e.segments],
+                             "out_name": e.out_name} for e in self.entries],
+                "selected": [str(e.path) for e in self.selected_entries()]}
+
+    def restore(self, data: dict) -> list:
+        """Re-add the saved clips (edits are applied as each one finishes
+        loading). Returns the paths that no longer exist."""
+        found, missing = [], []
+        for d in data.get("entries", []):
+            if not isinstance(d, dict) or not isinstance(d.get("path"), str):
+                continue
+            if Path(d["path"]).exists():
+                found.append(Path(d["path"]))
+                self._restore[d["path"]] = d
+            else:
+                missing.append(d["path"])
+        sel = data.get("selected")
+        self._restore_select = [p for p in sel if p in self._restore] if isinstance(sel, list) else []
+        if found:
+            self.add_paths(found)
+        return missing
+
+    def _apply_saved(self, e: ClipEntry):
+        d = self._restore.pop(str(e.path), None)
+        if not d:
+            return
+        try:
+            e.segments = [(float(a), None if b is None else float(b)) for a, b in d.get("segments", [])]
+        except (TypeError, ValueError):
+            e.segments = []
+        if isinstance(d.get("out_name"), str):
+            e.out_name = sanitize_filename(d["out_name"]) if d["out_name"] else ""
 
     def _add_row(self, e: ClipEntry):
         r = self.table.rowCount()
@@ -676,6 +721,8 @@ class ClipsTab(QWidget):
                                     f"outputs are saved and checked. Continue?") != QMessageBox.Yes:
                 return
         jobs = self.build_jobs(entries)
+        if jobs:
+            jobs = check_new_jobs(self.main, jobs, {str(e.path): e.info for e in entries}, self)
         if jobs:
             self.queue_jobs.emit(jobs)
 
