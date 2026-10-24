@@ -1,0 +1,145 @@
+"""A small video viewer window, used by Replay merge to look inside a clip
+or to watch a merged preview of a whole session."""
+
+import shutil
+
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtWidgets import QDialog, QPushButton, QVBoxLayout
+
+from ..core.util import format_hms_ms
+from .theme import set_kind
+from .widgets import Timeline, TrackPicker, card, hbox, label
+
+try:        # same fallback as the Clips tab when Qt's multimedia DLLs are blocked
+    from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+    from PySide6.QtMultimediaWidgets import QVideoWidget
+    HAVE_PLAYBACK = True
+except (ImportError, OSError):
+    from .fallback_player import FramePlayer as QMediaPlayer
+    from .fallback_player import FrameView as QVideoWidget
+    QAudioOutput = None
+    HAVE_PLAYBACK = False
+
+
+class PreviewDialog(QDialog):
+    """Plays one file. `marks` are times (s) drawn on the timeline, e.g. joins.
+    `info` (MediaInfo) names the audio tracks; `temp_dir` is deleted on close.
+    set_used() highlights the part of the clip a merge will use."""
+    position = Signal(float)        # seconds into the file, as it plays or is scrubbed
+    closed = Signal()
+
+    def __init__(self, main, path, title, info=None, marks=(), note="", temp_dir=None, parent=None):
+        super().__init__(parent)
+        self.path = str(path)
+        self.setWindowTitle(title)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.resize(980, 680)
+        self.info = info
+        self.temp_dir = temp_dir
+        self.marks = list(marks)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(10)
+        lay.addWidget(label(title, "h2"))
+        if note:
+            lay.addWidget(label(note, "muted", wrap=True))
+
+        pv, pvl = card(margins=(0, 0, 0, 0), spacing=0)
+        pv.setObjectName("video")
+        self.video = QVideoWidget()
+        self.video.setMinimumHeight(300)
+        pvl.addWidget(self.video)
+        lay.addWidget(pv, 1)
+        self.player = QMediaPlayer(self)
+        if QAudioOutput is not None:
+            self.audio_out = QAudioOutput(self)
+            self.player.setAudioOutput(self.audio_out)
+        self.player.setVideoOutput(self.video)
+
+        self.timeline = Timeline()
+        self.timeline.setToolTip("Click or drag to seek. Dashed lines mark where clips join.")
+        self.timeline.seek.connect(lambda t: self.player.setPosition(int(t * 1000)))
+        lay.addWidget(self.timeline)
+        self.used_note = label("", "muted", wrap=True)
+        self.used_note.hide()
+        lay.addWidget(self.used_note)
+
+        self.b_play = QPushButton("Play")
+        self.b_play.setMinimumWidth(76)
+        self.b_play.clicked.connect(self.toggle_play)
+        b_back = set_kind(QPushButton("‹"), "icon")
+        b_back.clicked.connect(lambda: self.step(-1))
+        b_fwd = set_kind(QPushButton("›"), "icon")
+        b_fwd.clicked.connect(lambda: self.step(1))
+        self.time_label = label("0:00.000", "mono")
+        self.tracks = TrackPicker(main.track_prefs)
+        self.tracks.track_chosen.connect(self.player.setActiveAudioTrack)
+        hear = label("Hear", "muted")
+        b_close = QPushButton("Close")
+        b_close.clicked.connect(self.close)
+        lay.addWidget(hbox(self.b_play, b_back, b_fwd, self.time_label, "stretch", hear, self.tracks, b_close,
+                           stretch_end=False))
+        if not HAVE_PLAYBACK:
+            hear.hide()
+            self.tracks.hide()
+
+        self.player.positionChanged.connect(self._pos)
+        self.player.durationChanged.connect(self._dur)
+        self.player.tracksChanged.connect(self._tracks_changed)
+        for key, fn in (("Space", self.toggle_play), ("Left", lambda: self.step(-1)),
+                        ("Right", lambda: self.step(1)), ("J", lambda: self.jump(-5)),
+                        ("L", lambda: self.jump(5))):
+            QShortcut(QKeySequence(key), self, activated=fn)
+        self.player.setSource(QUrl.fromLocalFile(str(path)))
+        if info is not None:
+            self.timeline.set_state(duration=info.duration, snaps=self.marks)
+        QTimer.singleShot(0, self.toggle_play)
+
+    def _dur(self, ms):
+        self.timeline.set_state(duration=ms / 1000, snaps=self.marks)
+
+    def set_used(self, rng, text):
+        """Highlight `rng` (start, end) on the timeline, or nothing if None."""
+        self.timeline.set_state(segments=[rng] if rng else [])
+        self.used_note.setText(text)
+        self.used_note.setVisible(bool(text))
+
+    def _pos(self, ms):
+        t = ms / 1000
+        self.position.emit(t)
+        self.timeline.set_state(position=t)
+        self.time_label.setText(f"{format_hms_ms(t)}  /  {format_hms_ms(self.timeline.duration)}")
+
+    def _tracks_changed(self):
+        n = len(self.player.audioTracks())
+        audio = self.info.audio if self.info is not None else []
+        labels = [audio[i].label if i < len(audio) else f"Track {i + 1}" for i in range(n)]
+        titles = [(audio[i].title or audio[i].label) if i < len(audio) else labels[i] for i in range(n)]
+        self.tracks.set_tracks(labels, titles)
+
+    def toggle_play(self):
+        if self.player.playbackState() == QMediaPlayer.PlayingState:
+            self.player.pause()
+            self.b_play.setText("Play")
+        else:
+            self.player.play()
+            self.b_play.setText("Pause")
+
+    def step(self, frames):
+        self.player.pause()
+        self.b_play.setText("Play")
+        fps = (self.info.fps if self.info is not None else 0) or 30
+        self.player.setPosition(max(0, int(self.player.position() + frames * 1000 / fps)))
+
+    def jump(self, seconds):
+        self.player.setPosition(max(0, int(self.player.position() + seconds * 1000)))
+
+    def closeEvent(self, e):
+        self.closed.emit()
+        self.player.stop()
+        self.player.setSource(QUrl())       # release the file before deleting it
+        if self.temp_dir:
+            d = self.temp_dir
+            QTimer.singleShot(500, lambda: shutil.rmtree(d, ignore_errors=True))
+        super().closeEvent(e)

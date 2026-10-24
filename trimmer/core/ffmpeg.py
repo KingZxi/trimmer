@@ -1,0 +1,564 @@
+"""The one shared ffmpeg/ffprobe layer.
+
+Replaces the two separate copies of probing and progress handling that the
+old merge and compress scripts each had. Nothing here prints or prompts:
+progress goes to a callback and cancellation comes from a CancelToken, so
+it works the same from the GUI's worker thread and from the CLI.
+
+Only local ffmpeg/ffprobe executables are ever run. No network access.
+"""
+
+import json
+import os
+import queue
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable, List, Optional
+
+from .util import safe_unlink
+
+# On Windows, stop every ffmpeg call from flashing up a console window when
+# the app runs without one (pythonw / packaged GUI).
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+
+_ffmpeg_dir: Optional[Path] = None
+
+
+def set_ffmpeg_dir(path) -> None:
+    """Use ffmpeg/ffprobe from this folder instead of PATH (None = PATH)."""
+    global _ffmpeg_dir
+    _ffmpeg_dir = Path(path) if path else None
+    _cache.clear()
+
+
+def _tool(name: str) -> str:
+    exe = name + (".exe" if sys.platform == "win32" else "")
+    if _ffmpeg_dir is not None:
+        candidate = _ffmpeg_dir / exe
+        if candidate.exists():
+            return str(candidate)
+    return shutil.which(name) or name
+
+
+def ffmpeg_bin() -> str:
+    return _tool("ffmpeg")
+
+
+def ffprobe_bin() -> str:
+    return _tool("ffprobe")
+
+
+def tools_available() -> List[str]:
+    """Names of missing tools (empty list = all good)."""
+    missing = []
+    for name, path in (("ffmpeg", ffmpeg_bin()), ("ffprobe", ffprobe_bin())):
+        if not (Path(path).exists() or shutil.which(path)):
+            missing.append(name)
+    return missing
+
+
+def run_quiet(cmd, cwd=None, timeout=None) -> subprocess.CompletedProcess:
+    """subprocess.run with captured output and no console window."""
+    return subprocess.run(cmd, capture_output=True, text=True, cwd=cwd,
+                          timeout=timeout, creationflags=_NO_WINDOW,
+                          encoding="utf-8", errors="replace")
+
+
+def run_bytes(cmd, timeout=None) -> subprocess.CompletedProcess:
+    """Like run_quiet but stdout/stderr stay raw bytes (PCM, images)."""
+    return subprocess.run(cmd, capture_output=True, timeout=timeout, creationflags=_NO_WINDOW)
+
+
+class FFmpegError(RuntimeError):
+    pass
+
+
+class Cancelled(Exception):
+    """Raised inside the engine when the user cancels a job."""
+
+
+def _suspend(process, pause: bool):
+    """Freeze or unfreeze a running process in place (no work is lost)."""
+    try:
+        if process.poll() is not None:
+            return
+        if sys.platform == "win32":
+            import ctypes
+            fn = ctypes.windll.ntdll.NtSuspendProcess if pause else ctypes.windll.ntdll.NtResumeProcess
+            fn(ctypes.c_void_p(int(process._handle)))
+        else:
+            import signal
+            os.kill(process.pid, signal.SIGSTOP if pause else signal.SIGCONT)
+    except (OSError, AttributeError, ValueError):
+        pass
+
+
+class CancelToken:
+    """Thread-safe cancel and pause control shared between the GUI and the
+    worker. Pausing freezes the running ffmpeg where it is and holds the
+    engine at its next check(); resuming carries on exactly from there."""
+
+    def __init__(self):
+        self._event = threading.Event()
+        self._running = threading.Event()
+        self._running.set()
+        self._lock = threading.Lock()
+        self._procs = set()
+
+    def cancel(self):
+        with self._lock:
+            procs = list(self._procs)
+        for p in procs:              # a frozen process must be thawed before it can be stopped
+            _suspend(p, False)
+        self._event.set()
+        self._running.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+    def pause(self):
+        with self._lock:
+            self._running.clear()
+            for p in self._procs:
+                _suspend(p, True)
+
+    def resume(self):
+        with self._lock:
+            for p in self._procs:
+                _suspend(p, False)
+            self._running.set()
+
+    @property
+    def paused(self) -> bool:
+        return not self._running.is_set() and not self._event.is_set()
+
+    def register(self, process):
+        with self._lock:
+            self._procs.add(process)
+            if not self._running.is_set():
+                _suspend(process, True)
+
+    def unregister(self, process):
+        with self._lock:
+            self._procs.discard(process)
+
+    def check(self):
+        while not self._running.wait(0.25):      # paused: wait here until resumed or cancelled
+            if self._event.is_set():
+                break
+        if self._event.is_set():
+            raise Cancelled()
+
+
+# --------------------------------------------------------------------------
+# Probing
+# --------------------------------------------------------------------------
+
+GENERIC_HANDLERS = {"soundhandler", "sound media handler", "core media audio",
+                    "videohandler", "video media handler", "core media video"}
+
+
+def _clean_track_title(tags: dict):
+    """Prefer a real stream title; ignore generic muxer handler names."""
+    title = tags.get("title")
+    if title:
+        return title
+    handler = tags.get("handler_name")
+    if handler and handler.strip().lower() not in GENERIC_HANDLERS:
+        return handler
+    return None
+
+
+def _parse_rate(text) -> float:
+    try:
+        if text and "/" in text:
+            n, d = text.split("/")
+            return float(n) / float(d) if float(d) else 0.0
+        return float(text or 0)
+    except ValueError:
+        return 0.0
+
+
+@dataclass
+class AudioTrack:
+    index: int                  # ordinal among audio streams (for -map 0:a:N)
+    codec: str = ""
+    channels: int = 0
+    sample_rate: int = 0
+    bit_rate: int = 0
+    title: Optional[str] = None
+    language: Optional[str] = None
+
+    @property
+    def label(self) -> str:
+        return self.title or f"Track {self.index + 1}"
+
+
+@dataclass
+class MediaInfo:
+    path: Path
+    duration: float = 0.0
+    start_time: float = 0.0
+    size: int = 0
+    bit_rate: int = 0
+    format_name: str = ""
+    has_video: bool = False
+    video_codec: str = ""
+    width: int = 0
+    height: int = 0
+    fps: float = 0.0
+    pix_fmt: str = ""
+    audio: List[AudioTrack] = field(default_factory=list)
+
+    @property
+    def resolution(self) -> str:
+        return f"{self.width}x{self.height}" if self.has_video else "audio only"
+
+    def stream_signature(self):
+        """What has to match for clips to be joined by stream copy."""
+        return (self.video_codec, self.width, self.height, self.pix_fmt,
+                tuple((a.codec, a.channels, a.sample_rate) for a in self.audio))
+
+
+_cache = {}
+
+
+def probe(path, use_cache: bool = True) -> MediaInfo:
+    path = Path(path)
+    try:
+        st = path.stat()
+        key = (str(path.resolve()), st.st_size, st.st_mtime)
+    except OSError as e:
+        raise FFmpegError(f"Can't read {path.name}: {e}")
+    if use_cache and key in _cache:
+        return _cache[key]
+
+    cmd = [ffprobe_bin(), "-v", "error",
+           "-show_entries",
+           "format=duration,size,bit_rate,format_name,start_time:"
+           "stream=index,codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,"
+           "pix_fmt,channels,sample_rate,bit_rate:stream_tags=title,language,handler_name:"
+           "stream_disposition=attached_pic",
+           "-of", "json", str(path)]
+    try:
+        out = run_quiet(cmd)
+    except FileNotFoundError:
+        raise FFmpegError("ffprobe was not found. Install ffmpeg or set its folder in Settings.")
+    if out.returncode != 0:
+        raise FFmpegError(f"ffprobe couldn't read {path.name}: {out.stderr.strip()[-500:]}")
+    try:
+        data = json.loads(out.stdout)
+    except json.JSONDecodeError:
+        raise FFmpegError(f"ffprobe returned unreadable output for {path.name}")
+
+    fmt = data.get("format") or {}
+    info = MediaInfo(path=path)
+    info.duration = float(fmt.get("duration") or 0.0)
+    try:
+        info.start_time = float(fmt.get("start_time") or 0.0)
+    except ValueError:
+        info.start_time = 0.0
+    info.size = int(fmt.get("size") or st.st_size)
+    info.bit_rate = int(fmt.get("bit_rate") or 0)
+    info.format_name = fmt.get("format_name", "")
+    for s in data.get("streams", []):
+        kind = s.get("codec_type")
+        tags = s.get("tags") or {}
+        if kind == "video" and not info.has_video:
+            if (s.get("disposition") or {}).get("attached_pic"):
+                continue
+            info.has_video = True
+            info.video_codec = s.get("codec_name", "")
+            info.width = int(s.get("width") or 0)
+            info.height = int(s.get("height") or 0)
+            info.fps = _parse_rate(s.get("avg_frame_rate")) or _parse_rate(s.get("r_frame_rate"))
+            info.pix_fmt = s.get("pix_fmt", "")
+        elif kind == "audio":
+            info.audio.append(AudioTrack(
+                index=len(info.audio),
+                codec=s.get("codec_name", ""),
+                channels=int(s.get("channels") or 0),
+                sample_rate=int(s.get("sample_rate") or 0),
+                bit_rate=int(s.get("bit_rate") or 0),
+                title=_clean_track_title(tags),
+                language=tags.get("language"),
+            ))
+    _cache[key] = info
+    return info
+
+
+def keyframe_times(path, around: float = None, window: float = 15.0) -> List[float]:
+    """Video keyframe timestamps (seconds), near `around` or for the whole
+    file. Only keyframes can start a stream-copied file, so lossless cuts
+    have to land on one of these."""
+    cmd = [ffprobe_bin(), "-v", "error", "-select_streams", "v:0"]
+    if around is not None:
+        start = max(0.0, around - window)
+        cmd += ["-read_intervals", f"{start:.3f}%{around + window:.3f}"]
+    cmd += ["-show_entries", "packet=pts_time,flags", "-of", "csv=p=0", str(path)]
+    try:
+        out = run_quiet(cmd)
+    except FileNotFoundError:
+        return []
+    times = []
+    for line in out.stdout.splitlines():
+        parts = line.strip().split(",")
+        if len(parts) >= 2 and "K" in parts[1]:
+            try:
+                times.append(float(parts[0]))
+            except ValueError:
+                pass
+    return sorted(times)
+
+
+def keyframe_at_or_before(path, t: float) -> Optional[float]:
+    kfs = keyframe_times(path, around=t)
+    before = [k for k in kfs if k <= t + 0.001]
+    return before[-1] if before else None
+
+
+# --------------------------------------------------------------------------
+# Capability checks (cached)
+# --------------------------------------------------------------------------
+
+def ffmpeg_version() -> str:
+    try:
+        out = run_quiet([ffmpeg_bin(), "-hide_banner", "-version"])
+        return out.stdout.splitlines()[0] if out.stdout else "unknown"
+    except (FileNotFoundError, IndexError):
+        return "not found"
+
+
+def has_encoder(name: str) -> bool:
+    key = ("enc", name)
+    if key not in _cache:
+        try:
+            out = run_quiet([ffmpeg_bin(), "-hide_banner", "-encoders"])
+            _cache[key] = any(line.split()[1:2] == [name]
+                              for line in out.stdout.splitlines() if line.strip())
+        except FileNotFoundError:
+            _cache[key] = False
+    return _cache[key]
+
+
+def encoder_works(name: str) -> bool:
+    """True if ffmpeg lists the encoder AND a one-frame test encode succeeds
+    (a hardware encoder is listed even when there's no matching GPU)."""
+    key = ("works", name)
+    if key not in _cache:
+        ok = False
+        if has_encoder(name):
+            try:
+                out = run_quiet([ffmpeg_bin(), "-hide_banner", "-loglevel", "error",
+                                 "-f", "lavfi", "-i", "color=c=black:s=320x240:r=30:d=0.2",
+                                 "-frames:v", "3", "-pix_fmt", "yuv420p", "-c:v", name,
+                                 "-f", "null", "-"], timeout=30)
+                ok = out.returncode == 0
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                ok = False
+        _cache[key] = ok
+    return _cache[key]
+
+
+def libvmaf_available() -> bool:
+    key = ("filter", "libvmaf")
+    if key not in _cache:
+        try:
+            out = run_quiet([ffmpeg_bin(), "-hide_banner", "-h", "filter=libvmaf"])
+            text = (out.stdout or "") + (out.stderr or "")
+            _cache[key] = out.returncode == 0 and "Unknown filter" not in text
+        except FileNotFoundError:
+            _cache[key] = False
+    return _cache[key]
+
+
+# --------------------------------------------------------------------------
+# Running ffmpeg with progress
+# --------------------------------------------------------------------------
+
+@dataclass
+class Progress:
+    fraction: Optional[float]   # 0..1, None if unknown
+    out_time: float             # seconds of output written
+    size: Optional[int]         # bytes written so far
+    speed: Optional[float]      # x realtime
+    eta: Optional[float]        # seconds
+
+
+ProgressCallback = Callable[[Progress], None]
+
+
+@dataclass
+class RunResult:
+    status: str                 # "ok" | "failed" | "too_large"
+    stderr_tail: str = ""
+    last_size: Optional[int] = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
+
+
+def _terminate(process):
+    try:
+        process.terminate()
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+    except OSError:
+        pass
+
+
+def run_ffmpeg(args: List[str], duration: float, on_progress: ProgressCallback = None,
+               cancel: CancelToken = None, size_limit: int = None,
+               output_path: Path = None, cwd=None) -> RunResult:
+    """Run ffmpeg (args WITHOUT the leading binary) and report progress.
+
+    - Cancelling (via `cancel`) stops ffmpeg, closes our handle on its log,
+      THEN deletes the partial output, and raises Cancelled. That ordering is
+      the fix for the Windows self-lock crash in the old compressor.
+    - `size_limit`: stop early with status "too_large" the moment the output
+      grows past this many bytes (revert-if-larger). The partial output is
+      deleted.
+    - On failure the partial output is deleted and the stderr tail returned.
+    """
+    cmd = [ffmpeg_bin(), "-hide_banner", "-nostdin", "-progress", "pipe:1", "-nostats"] + list(args)
+    fd, stderr_name = tempfile.mkstemp(prefix="trimmer_ffmpeg_", suffix=".log")
+    os.close(fd)
+    stderr_log = Path(stderr_name)
+
+    cancelled = False
+    too_large_at = None
+    try:
+        with open(stderr_log, "w", encoding="utf-8", errors="replace") as errfile:
+            try:
+                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errfile,
+                                           stdin=subprocess.DEVNULL, cwd=cwd,
+                                           creationflags=_NO_WINDOW,
+                                           text=True, encoding="utf-8", errors="replace",
+                                           bufsize=1)
+            except FileNotFoundError:
+                raise FFmpegError("ffmpeg was not found. Install ffmpeg or set its folder in Settings.")
+            if cancel is not None:
+                cancel.register(process)        # so Pause can freeze it
+
+            # A reader thread feeds lines into a queue so this loop can check
+            # the cancel flag even while ffmpeg is quiet (e.g. seeking).
+            lines: "queue.Queue[Optional[str]]" = queue.Queue()
+
+            def reader():
+                try:
+                    for ln in process.stdout:
+                        lines.put(ln)
+                finally:
+                    lines.put(None)
+
+            threading.Thread(target=reader, daemon=True).start()
+
+            state = {}
+            start = time.time()
+            last_emit = 0.0
+            while True:
+                if cancel is not None and cancel.paused:
+                    t0 = time.time()
+                    while cancel.paused:
+                        time.sleep(0.1)
+                    start += time.time() - t0       # paused time doesn't count towards the ETA
+                if cancel is not None and cancel.cancelled:
+                    _terminate(process)
+                    cancelled = True
+                    break
+                try:
+                    line = lines.get(timeout=0.15)
+                except queue.Empty:
+                    continue
+                if line is None:
+                    process.wait()
+                    break
+                line = line.strip()
+                if "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                state[k] = v
+                if k != "progress":
+                    continue
+
+                size = None
+                if state.get("total_size", "N/A") != "N/A":
+                    try:
+                        size = int(state["total_size"])
+                    except ValueError:
+                        pass
+                if size_limit is not None and size is not None and size > size_limit:
+                    too_large_at = size
+                    _terminate(process)
+                    break
+
+                now = time.time()
+                if on_progress and (v == "end" or now - last_emit >= 0.2):
+                    last_emit = now
+                    out_t = 0.0
+                    us = state.get("out_time_us") or state.get("out_time_ms")
+                    try:
+                        out_t = max(0.0, int(us) / 1_000_000) if us not in (None, "N/A") else 0.0
+                    except ValueError:
+                        out_t = 0.0
+                    frac = min(1.0, out_t / duration) if duration and duration > 0 else None
+                    if v == "end" and duration:
+                        frac = 1.0
+                    speed = None
+                    sp = state.get("speed", "").rstrip("x").strip()
+                    try:
+                        speed = float(sp) if sp and sp != "N/A" else None
+                    except ValueError:
+                        pass
+                    eta = None
+                    if frac and frac > 0.01:
+                        elapsed = now - start
+                        eta = elapsed / frac - elapsed
+                    on_progress(Progress(frac, out_t, size, speed, eta))
+        # errfile is closed from here on, so deleting files is safe on Windows.
+        if cancel is not None:
+            cancel.unregister(process)
+
+        if cancelled:
+            if output_path is not None:
+                safe_unlink(output_path)
+            raise Cancelled()
+        if too_large_at is not None:
+            if output_path is not None:
+                safe_unlink(output_path)
+            return RunResult("too_large", "", too_large_at)
+        if process.returncode != 0:
+            tail = stderr_log.read_text(encoding="utf-8", errors="replace")[-1500:]
+            if output_path is not None:
+                safe_unlink(output_path)
+            return RunResult("failed", tail)
+        size = Path(output_path).stat().st_size if output_path and Path(output_path).exists() else None
+        return RunResult("ok", "", size)
+    finally:
+        try:
+            safe_unlink(stderr_log)
+        except OSError:
+            pass
+
+
+def run_checked(args: List[str], cwd=None, cancel: CancelToken = None) -> subprocess.CompletedProcess:
+    """Run a short ffmpeg helper command (analysis, probes). Raises
+    FFmpegError with ffmpeg's real error text on failure."""
+    if cancel is not None:
+        cancel.check()
+    out = run_quiet([ffmpeg_bin(), "-hide_banner"] + list(args), cwd=cwd)
+    if cancel is not None:
+        cancel.check()
+    if out.returncode != 0:
+        raise FFmpegError(out.stderr.strip()[-1200:] or f"ffmpeg exited with code {out.returncode}")
+    return out

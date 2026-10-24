@@ -1,0 +1,184 @@
+# Trimmer
+
+Trim, merge, compress and rip OBS clips in one Windows desktop app. Built for
+OBS Replay Buffer saves: overlapping replays are joined frame-exactly with no
+repeated or lost footage, and trims can be frame-exact without re-encoding
+the whole clip.
+
+![Clips tab: thumbnails and waveform on the trim timeline](docs/clips.png)
+
+**Fully offline.** Trimmer never connects to the internet. It has no
+telemetry, no update checks and no online services. All the work is done by
+ffmpeg on your own PC. A test (`test_no_network_code`) fails if any
+networking code is ever added.
+
+## Install (Windows)
+
+1. Install Python 3.10 or newer.
+2. Install ffmpeg (with ffprobe) and put it on PATH, or set its folder in
+   Settings. A build that includes libvmaf enables the measured auto-quality
+   mode (auto3).
+3. In this folder, run:
+
+   ```
+   pip install -r requirements.txt
+   python trimmer.py
+   ```
+
+   You can also pass files or folders to open straight away:
+   `python trimmer.py "D:\Videos\Replays"`.
+
+After that, just **double-click `Trimmer.pyw`**: it starts Trimmer without a
+console window, using the `pythonw.exe` that comes with Python (signed, so
+Windows Smart App Control allows it). For a desktop icon, right-click
+`Trimmer.pyw` → Send to → Desktop (create shortcut). Once it's running you can
+pin it to the taskbar, where it shows Trimmer's own icon.
+
+## What it does
+
+### Clips tab
+Drop in one clip or hundreds, either as files or whole folders. For each clip you can:
+
+- **Preview and trim** it. Press I and O to mark in and out points, and add
+  as many parts as you like to cut out the middle. Space plays, Left/Right
+  step one frame, J/L jump 5 seconds, and Delete removes the selected part.
+  The timeline shows thumbnails and the audio waveform, so the kill or the
+  shout is easy to spot (turn off in Settings → General).
+- **Choose audio tracks**: keep any of them, or mix them into one track so
+  phones and Discord can hear everything. The separate tracks can be kept too.
+- **Compress** with a preset or your own settings: CRF, auto2, auto3,
+  target file size, lossless, H.264/H.265/AV1, NVENC/QSV/AMF when your GPU
+  supports it, and a resolution or frame rate cap.
+- **Rip** audio tracks (original, WAV, FLAC, MP3, M4A) or the video on its own.
+- Compressed files get the settings in their name, e.g. `(LOSSY), (CQ28
+  auto2, H265 NVENC, medium)`. Turn this off in Settings → General.
+- **Name** the output: type in "Save as" (or press F2). It starts with the
+  original name so you can add to it (turn this off in Settings). Ripped
+  tracks use the same name.
+- **Pick the track you hear** in the preview. Right-click a track to make it
+  the default for every clip you open until you close Trimmer.
+- **Estimate** the output size before you start.
+
+Lossless trims start at the nearest keyframe *before* your mark, so nothing
+you marked is lost. Tick "Frame-exact cuts" if you need the exact frame: it
+uses **smart cut**, which re-encodes only the frames between your mark and the
+next keyframe (and between the last keyframe and your end mark) and copies
+everything else untouched. Saves stay near-instant and nearly the whole clip
+keeps its original quality. Smart cut works on H.264 and H.265 clips; every
+join is decoded and compared with the original, and if anything doesn't
+match, Trimmer re-encodes the whole trim instead and says so in the log.
+
+### Replay merge tab
+
+![Replay merge tab: sessions and how the clips overlap](docs/replay-merge.png)
+
+Drop in your Replay Buffer clips. Clips that overlap in time are grouped into
+sessions and drawn on a timeline, and clips that are fully covered by their
+neighbours are marked as redundant. Double-click a session (or press F2) to
+name its output. Shift-click any session's tick to tick or untick them all.
+Tick **Watch folder** and pick your OBS recording folder,
+and each new replay appears here, grouped into its session, as soon as OBS
+has finished saving it. The overlap view shows the part of each clip that is used
+brightly and the repeated footage dimly. Click a clip to watch it: the
+viewer highlights the used part, and a playhead on the clip's bar follows
+along. Or press
+**Preview merged session** to watch a temporary merged video built exactly
+the way the real merge would be (nothing is saved). Each session can then be:
+
+- **merged into one video**, or
+- **kept as separate clips** with the repeated footage removed.
+
+Tick "Write an info file" to get a text file next to each output that lists
+every clip: where it sits in the result, which part of the original was used,
+and where the original clip would have ended (in trim mode, which file and
+how far into it).
+
+Trimmer first tries an **exact lossless join**: it finds the frames that
+the clips have in common, byte for byte, and joins them there, so nothing is
+repeated or lost. If the clips don't share frames, it falls back to the old
+timestamp and audio-alignment method, and re-encodes at high quality when a
+lossless cut would repeat more than half a second.
+
+### Queue
+Jobs run one at a time, top to bottom.
+
+- **Pause** freezes the running job exactly where it is, and **Resume**
+  carries on from that point. **Pause after this job** lets the current job
+  finish first. Quitting while paused cancels the job cleanly.
+- **Start jobs automatically** can be turned off, so you can build up a
+  queue and press Start when you're ready.
+- Each job shows where it **saves to**, what it will do, its **predicted
+  size** (then the real size and % saved), and whether it deletes the original.
+- Waiting jobs can be changed: double-click a name or folder, or right-click
+  one or several jobs to rename them, change the output folder, change the
+  compression, turn deleting originals on or off, or move them up or down.
+- **Retry** re-runs failed or cancelled jobs with the same settings. Right-click
+  a finished job to open it, show it in its folder, or copy its path.
+- **When the queue finishes**: do nothing, open the output folder, or put the
+  PC to sleep (after a 30-second countdown you can cancel).
+- **Space saved** (bottom of the tab) is a running, approximate total of the
+  disk space freed by jobs that deleted their originals, plus how much smaller
+  all outputs are than their sources. If you delete originals yourself, turn on
+  "Count space saved even when originals are kept" in Settings. Reset it there.
+
+A cancelled job never leaves a half-written file. If Trimmer closes or
+crashes, unfinished jobs are offered again the next time it starts.
+
+## Safety
+
+- Outputs are written as `name.part.mp4`, checked (duration, tracks, no
+  missing frames, and for lossless merges that every frame is present), and
+  only then renamed to their final name. The original file's date is copied over.
+- "Delete originals" only runs after the output has passed those checks. It
+  moves files to the Recycle Bin by default, and permanent delete is a setting.
+- An output can never overwrite its own source. Name clashes ask you what to
+  do, or follow the rule you set in Settings.
+- Settings, logs and crash reports are kept in `%APPDATA%\Trimmer`
+  (`Logs` holds one log per run).
+
+## Project layout
+
+```
+trimmer.py              start the app
+trimmer/core/           the engine (no Qt): probing, rendering, jobs
+  ffmpeg.py             running ffmpeg/ffprobe, progress, pause and cancel
+  render.py             turning "these spans of these files" into one output
+  smartcut.py           frame-exact trims that re-encode only around each cut
+  packets.py            exact replay joins by matching encoded packets
+  merge.py              grouping replays into sessions, the fallback join, info files
+  jobs.py               what the queue runs, output checks, deleting originals
+  encode.py             compression settings, auto quality, size prediction
+  peek.py               waveform and thumbnails for the timeline
+trimmer/gui/            the PySide6 interface (one module per tab, plus widgets)
+tests/                  engine and GUI tests on synthetic clips
+```
+
+## Tests
+
+```
+pip install pytest
+python -m pytest tests -q
+```
+
+The tests build synthetic OBS-style recordings with ffmpeg (so ffmpeg with
+libx264 and libx265 is needed), and take a few minutes. They check that
+lossless merges are byte-exact, that smart cut keeps the original frames,
+that trims, compression, rips and the "keep original if bigger" rule all
+work, that the GUI flows run, and that cancelling leaves nothing behind. On
+Linux, run the GUI tests headless with `QT_QPA_PLATFORM=offscreen`.
+
+## Known limits
+
+- If exact lossless merging can't match a session (for example OBS was
+  restarted between saves), it says so and uses the fallback method.
+- Smart cut was verified on simulated clips (x264 and x265). Its re-encoded
+  frames use x264/x265 even when OBS recorded with NVENC; players switch
+  encoder settings at the join, which ffmpeg-based players handle. If a
+  player stutters right at a cut, turn smart cut off in Settings.
+- auto3 needs an ffmpeg build with libvmaf. Without it, auto3 measures
+  quality with SSIM instead.
+- If Windows Smart App Control blocks Qt's video playback DLLs ("An
+  Application Control policy has blocked this file"), Trimmer still runs:
+  the preview shows still frames grabbed by ffmpeg instead of playing video.
+- The preview uses Qt's built-in player. If a file won't preview, it can
+  still be edited and exported.
