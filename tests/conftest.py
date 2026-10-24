@@ -1,5 +1,7 @@
 """Shared GUI test setup."""
 
+import sys
+
 import pytest
 
 
@@ -19,3 +21,19 @@ def close_dialog(request):
     main_window.ask_close_choice = real
     clear_session()
     clear_queue()
+
+
+@pytest.fixture(autouse=True)
+def no_slot_errors(request):
+    """An exception inside a Qt slot only reaches sys.excepthook (the app shows its error box);
+    fail the test instead of letting it pass silently."""
+    if request.module.__name__ not in ("tests.test_gui", "tests.test_warnings"):
+        yield
+        return
+    errors, real = [], sys.excepthook
+    sys.excepthook = lambda *exc: errors.append(exc)
+    yield
+    sys.excepthook = real
+    if errors:
+        import traceback
+        raise AssertionError("Error in a Qt slot:\n" + "".join(traceback.format_exception(*errors[0])))

@@ -676,6 +676,12 @@ def test_send_replay_clips_to_clips_tab():
     pump(30, lambda: len(m.sessions) == 1 and len(m.paths) == 1)
     assert [len(s.clips) for s in m.sessions] == [1] and len(m.paths) == 1
 
+    # the list being rebuilt (fewer rows than sessions) must not break the track boxes or queueing
+    m.sessions = m.sessions * 3
+    m._build_track_checks()
+    assert m._ticked() == []
+    m.sessions = m.sessions[:1]
+
     # clip rows alone, mixed with another session
     w.tabs.setCurrentWidget(m)
     _select_rows(m.tree, [0])

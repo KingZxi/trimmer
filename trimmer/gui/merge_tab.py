@@ -413,6 +413,24 @@ class MergeTab(QWidget):
     def _show(self, sessions, skipped, notes):
         self.sessions = sessions
         self.used = {}
+        # No selection or tick signals while the rows are rebuilt: the list has fewer rows than sessions
+        self.tree.blockSignals(True)
+        try:
+            self._fill(sessions)
+        finally:
+            self.tree.blockSignals(False)
+        self._saved = [d for d in self._saved if not d.get("used")]
+        self._refresh_default_names()
+        self._build_track_checks()
+        if sessions:
+            self.tree.setCurrentItem(self.tree.topLevelItem(0))
+            self._sel()             # the current row may already have been set while signals were off
+        msg = f"Found {len(sessions)} session(s) in {sum(len(s.clips) for s in sessions)} clip(s)."
+        if skipped:
+            msg += f" Skipped {len(skipped)} file(s) that couldn't be read."
+        self.status.emit(msg)
+
+    def _fill(self, sessions):
         self.tree.clear()
         for s in sessions:
             length = (s.end - s.start).total_seconds()
@@ -432,15 +450,6 @@ class MergeTab(QWidget):
                 child = QTreeWidgetItem([c.path.name, "", format_hms(c.duration), "", "; ".join(note)])
                 it.addChild(child)
             self.tree.addTopLevelItem(it)
-        self._saved = [d for d in self._saved if not d.get("used")]
-        self._refresh_default_names()
-        self._build_track_checks()
-        if sessions:
-            self.tree.setCurrentItem(self.tree.topLevelItem(0))
-        msg = f"Found {len(sessions)} session(s) in {sum(len(s.clips) for s in sessions)} clip(s)."
-        if skipped:
-            msg += f" Skipped {len(skipped)} file(s) that couldn't be read."
-        self.status.emit(msg)
 
     # ---------------------------------------------------------- save state
     @staticmethod
@@ -841,10 +850,14 @@ class MergeTab(QWidget):
     def _retitle_out(self):
         self.g_out.setTitle("Save the trimmed videos" if self.r_trim.isChecked() else "Save the merged video")
 
+    def _ticked(self):
+        """Ticked sessions. While the list is being rebuilt it can have fewer rows than sessions."""
+        items = [self.tree.topLevelItem(i) for i in range(len(self.sessions))]
+        return [s for s, it in zip(self.sessions, items) if it is not None and it.checkState(0) == Qt.Checked]
+
     def _track_sessions(self):
         """Sessions whose tracks the checkboxes describe: the ticked ones, else the selected one, else all."""
-        ticked = [s for i, s in enumerate(self.sessions)
-                  if self.tree.topLevelItem(i).checkState(0) == Qt.Checked]
+        ticked = self._ticked()
         if ticked:
             return ticked
         it = self.tree.currentItem()
@@ -889,8 +902,7 @@ class MergeTab(QWidget):
         return EncodeSettings.from_dict(s.presets[name]) if name in s.presets else s.encode_settings()
 
     def queue(self):
-        chosen = [s for i, s in enumerate(self.sessions)
-                  if self.tree.topLevelItem(i).checkState(0) == Qt.Checked]
+        chosen = self._ticked()
         if not chosen:
             QMessageBox.information(self, "Nothing ticked", "Tick at least one session.")
             return
