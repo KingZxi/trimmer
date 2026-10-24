@@ -152,6 +152,7 @@ class QueueTab(QWidget):
         self.paused = False
         self._estimating = None
         self._to_estimate = []
+        self.on_finished = {}       # id(job) -> callback(item), for jobs another tab wants to follow up on
         self._build()
 
     def _build(self):
@@ -524,11 +525,18 @@ class QueueTab(QWidget):
         if i >= 0 and len(sel) == 1 and sel[0] is self.items[i]:
             self.log.appendPlainText(msg)
 
+    def _follow_up(self, item):
+        """Hand a finished (or removed) job to the tab that asked to hear about it."""
+        fn = self.on_finished.pop(id(item.job), None)
+        if fn is not None and not self.closing:
+            fn(item)
+
     def _finished(self, item_id):
         i = self._index(item_id)
         if i >= 0:
             self._row(self.items[i])
             self._selection_size()
+            self._follow_up(self.items[i])
         self.refresh_savings()
         self._persist()
         self._buttons()
@@ -762,6 +770,8 @@ class QueueTab(QWidget):
         self._rebuild()
         self._persist()
         self.running_changed.emit(self.is_running())
+        for it in items:
+            self._follow_up(it)
 
     def clear_finished(self):
         self.items[:] = [i for i in self.items if i.status in ("queued", "running")]

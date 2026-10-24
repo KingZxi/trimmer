@@ -83,7 +83,11 @@ brightly and the repeated footage dimly. Click a clip to watch it: the
 viewer highlights the used part, and a playhead on the clip's bar follows
 along. Or press
 **Preview merged session** to watch a temporary merged video built exactly
-the way the real merge would be (nothing is saved). Each session can then be:
+the way the real merge would be (nothing is saved). Right-click a session or
+some clips (Ctrl or Shift-click to select several) to **send them to the Clips
+tab**, each as its own clip, or, for a multi-clip session, to **merge it first**
+(a plain lossless merge) so it arrives in Clips as one clip. Either way the
+clips leave Replay merge. Each session can then be:
 
 - **merged into one video**, or
 - **kept as separate clips** with the repeated footage removed.

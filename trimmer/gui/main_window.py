@@ -150,6 +150,11 @@ class MainWindow(QMainWindow):
         else:
             self.merge.add_paths(find_video_files(paths, recursive=True))
 
+    def send_to_clips(self, paths):
+        """Add files to the Clips tab and show it (used by Replay merge's right-click menu)."""
+        self.tabs.setCurrentWidget(self.clips)
+        self.clips.add_paths([Path(p) for p in paths])
+
     def add_files_dialog(self):
         exts = " ".join(f"*{e}" for e in sorted(VIDEO_EXTENSIONS))
         files, _ = QFileDialog.getOpenFileNames(self, "Add clips", self.settings.ui.get("last_dir", ""),

@@ -647,3 +647,81 @@ def test_save_state_skips_missing_files(monkeypatch):
     assert len(shown) == 1 and "gone.mp4" in shown[0]
     assert not session_path().exists()
     w2.close()
+
+
+def _select_rows(tree, rows):
+    """Select tree items; each is a session index or (session index, clip index)."""
+    tree.clearSelection()
+    for r in rows:
+        it = tree.topLevelItem(r) if isinstance(r, int) else tree.topLevelItem(r[0]).child(r[1])
+        it.setSelected(True)
+
+
+def test_send_replay_clips_to_clips_tab():
+    w = window(WORK / "send_out")
+    w.queue.auto_start.setChecked(False)
+    fx.shared_replays(WORK / "send_rep")
+    w.tabs.setCurrentWidget(w.merge)
+    w._route([str(WORK / "send_rep")])
+    pump(30, lambda: w.merge.sessions)
+    m = w.merge
+    # a session row means all its clips; a clip row of the same session adds nothing
+    _select_rows(m.tree, [0, (0, 1)])
+    clips, sessions = m._selection()
+    assert len(clips) == 4 and len(sessions) == 1
+    m.send_to_clips()
+    pump(30, lambda: len(w.clips.entries) == 4)
+    assert w.tabs.currentWidget() is w.clips
+    assert len(w.clips.entries) == 4 and not w.queue.items
+    pump(30, lambda: len(m.sessions) == 1 and len(m.paths) == 1)
+    assert [len(s.clips) for s in m.sessions] == [1] and len(m.paths) == 1
+
+    # clip rows alone, mixed with another session
+    w.tabs.setCurrentWidget(m)
+    _select_rows(m.tree, [0])
+    m.send_to_clips()
+    pump(30, lambda: len(w.clips.entries) == 5)
+    assert not m.paths
+    w.close()
+
+
+def test_merge_then_send_to_clips_and_failure():
+    rep = WORK / "mts_rep"
+    fx.shared_replays(rep)
+    w = window(WORK / "mts_out")
+    w.queue.auto_start.setChecked(False)         # the merge must run anyway
+    w.tabs.setCurrentWidget(w.merge)
+    w._route([str(rep)])
+    pump(30, lambda: w.merge.sessions)
+    m = w.merge
+    _select_rows(m.tree, [(0, 0), (0, 2)])       # clip rows: their session is merged whole
+    m.merge_then_send()
+    assert len(w.queue.items) == 1 and w.queue.items[0].job.options.merge_mode == "merge"
+    pump(240, lambda: w.queue.items[0].status in ("done", "failed") and len(w.clips.entries) == 1)
+    assert w.queue.items[0].status == "done"
+    assert len(w.clips.entries) == 1 and w.tabs.currentWidget() is w.clips
+    e = w.clips.entries[0]
+    assert e.path.exists() and e.path.parent == WORK / "mts_out"
+    assert abs(e.info.duration - 48) < 1.5
+    pump(30, lambda: len(m.paths) == 1)
+    assert [p.name for p in m.paths] == [sorted(rep.iterdir())[-1].name]
+    assert not w.queue.on_finished
+
+    # a merge that fails puts the clips back
+    rep2 = WORK / "mts_rep2"
+    paths = fx.shared_replays(rep2)
+    m.clear()
+    m.add_paths(paths)
+    pump(30, lambda: m.sessions)
+    _select_rows(m.tree, [0])
+    real_start = w.queue.start
+    w.queue.start = lambda: None
+    m.merge_then_send()
+    w.queue.start = real_start
+    paths[1].unlink()
+    w.queue.start()
+    pump(120, lambda: w.queue.items[-1].status in ("done", "failed", "cancelled", "skipped"))
+    assert w.queue.items[-1].status != "done"
+    pump(30, lambda: sum(len(s.clips) for s in m.sessions) == 4)
+    assert sum(len(s.clips) for s in m.sessions) == 4 and len(w.clips.entries) == 1
+    w.close()

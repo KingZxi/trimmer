@@ -9,7 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QFileDialog, QFrame,
-                               QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QProgressDialog, QPushButton,
+                               QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QProgressDialog, QPushButton,
                                QRadioButton, QSplitter, QTreeWidgetItem, QVBoxLayout,
                                QWidget)
 
@@ -20,7 +20,7 @@ from ..core import ffmpeg as ff
 from ..core.ffmpeg import CancelToken
 from ..core.render import AUDIO_RIP_FORMATS
 from ..core.jobs import JobContext, JobOptions, MergeJob, run_job, session_names
-from ..core.util import format_hms, format_hms_ms, parse_timecode, sanitize_filename
+from ..core.util import VIDEO_EXTENSIONS, format_hms, format_hms_ms, parse_timecode, sanitize_filename
 from .theme import colour, set_kind
 from .widgets import HintTree, card, hbox, label
 from .folder_watch import FolderWatcher
@@ -204,6 +204,9 @@ class MergeTab(QWidget):
         self.tree.headerItem().setToolTip(0, "Tick the sessions to queue. Shift-click a tick to tick or untick all")
         self.tree.headerItem().setToolTip(3, "Double-click a session (or press F2) to name its output")
         self.tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._menu)
         self.tree.itemDoubleClicked.connect(self._edit_name)
         self.tree.itemChanged.connect(self._name_changed)
         # Esc while renaming: put the grey default name back
@@ -731,6 +734,109 @@ class MergeTab(QWidget):
             mk = next((str(d.clip.path) for d in self.viewers if any(c is d.clip for c in s.clips)), None)
             if mk is None:
                 self.view.set_marker(None, 0)
+
+    # ------------------------------------------------- send to the Clips tab
+    def _selection(self):
+        """(clips, sessions) under the selected rows: a session row means all its clips, a clip row just
+        that clip. Both come back de-duplicated, in time order."""
+        picked = set()
+        for it in self.tree.selectedItems():
+            top = it if it.parent() is None else it.parent()
+            i = self.tree.indexOfTopLevelItem(top)
+            if not 0 <= i < len(self.sessions):
+                continue
+            if it.parent() is None:
+                picked.update((i, k) for k in range(len(self.sessions[i].clips)))
+            else:
+                k = top.indexOfChild(it)
+                if 0 <= k < len(self.sessions[i].clips):
+                    picked.add((i, k))
+        clips = [self.sessions[i].clips[k] for i, k in sorted(picked)]
+        sessions = [self.sessions[i] for i in sorted({i for i, _ in picked})]
+        return clips, sessions
+
+    def _menu(self, pos):
+        it = self.tree.itemAt(pos)
+        if it is None:
+            return
+        if not it.isSelected():
+            self.tree.setCurrentItem(it)
+            self.tree.clearSelection()
+            it.setSelected(True)
+        clips, sessions = self._selection()
+        if not clips:
+            return
+        m = QMenu(self)
+        m.addAction(f"Send {len(clips)} clip{'s' if len(clips) != 1 else ''} to Clips",
+                    lambda: self.send_to_clips())
+        multi = [s for s in sessions if len(s.clips) > 1]
+        if multi:
+            m.addAction(f"Merge {len(multi)} session{'s' if len(multi) != 1 else ''}, then send to Clips",
+                        lambda: self.merge_then_send())
+        m.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _take(self, paths):
+        """Remove these clips from Replay merge and find the sessions again. Ticks and names of the
+        sessions that stay are kept."""
+        gone = {str(p) for p in paths}
+        self._saved = self.snapshot()["sessions"]
+        self.paths = [p for p in self.paths if str(p) not in gone]
+        if self.paths:
+            self.detect()
+        else:
+            self.clear()
+
+    def send_to_clips(self, clips=None):
+        """Move clips (default: the selection) to the Clips tab, each as its own entry."""
+        if clips is None:
+            clips = self._selection()[0]
+        if not clips:
+            return
+        paths = [c.path for c in clips]
+        self._take(paths)
+        self.main.send_to_clips(paths)
+
+    def merge_then_send(self, sessions=None):
+        """Merge each multi-clip session (default: those in the selection) with a plain lossless merge,
+        and when a merge is done add the result to the Clips tab as one clip."""
+        if sessions is None:
+            sessions = self._selection()[1]
+        sessions = [s for s in sessions if len(s.clips) > 1]
+        if not sessions:
+            return
+        o = self._opts()
+        o.merge_mode, o.delete_originals, o.generate_clip_log = "merge", False, False
+        jobs, groups = [], {}
+        for s in sessions:
+            name = self.tree.topLevelItem(self.sessions.index(s)).data(3, Qt.UserRole) or ""
+            job = MergeJob(clip_paths=[str(c.path) for c in s.clips], title_text=f"Session {s.name}",
+                           options=JobOptions(**vars(o)), output_name=name)
+            jobs.append(job)
+            groups[id(job)] = [c.path for c in s.clips]
+        jobs = check_new_jobs(self.main, jobs, {str(c.path): c.info for s in sessions for c in s.clips},
+                              self, check_processed=False)
+        if not jobs:
+            return
+        q = self.main.queue
+        for job in jobs:
+            q.on_finished[id(job)] = lambda item, paths=groups[id(job)]: self._merge_finished(item, paths)
+        self._take([p for job in jobs for p in groups[id(job)]])
+        q.add_jobs(jobs, start=True)
+        if not q.is_running():          # runs now even when the queue isn't set to start by itself
+            q.start()
+        self.status.emit(f"Merging {len(jobs)} session{'s' if len(jobs) != 1 else ''}; the result "
+                         f"goes to Clips when it's done.")
+
+    def _merge_finished(self, item, paths):
+        outs = [p for p in (item.result.outputs if item.result else []) if Path(p).suffix.lower() in VIDEO_EXTENSIONS]
+        outs = [p for p in outs if Path(p).exists()]
+        if item.status == "done" and outs:
+            self.main.send_to_clips(outs[:1])
+            self.status.emit(f"Merged {len(paths)} clips into {Path(outs[0]).name} and sent it to Clips.")
+        else:
+            self.add_paths([p for p in paths if Path(p).exists()])
+            self.status.emit(f"The merge didn't finish ({item.status}); the {len(paths)} clips are back in "
+                             f"Replay merge.")
 
     def _retitle_out(self):
         self.g_out.setTitle("Save the trimmed videos" if self.r_trim.isChecked() else "Save the merged video")

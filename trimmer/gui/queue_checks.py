@@ -114,9 +114,10 @@ def find_processed(jobs, infos):
 
 
 # ------------------------------------------------------------------- entry point
-def check_new_jobs(main, jobs, infos, parent=None):
+def check_new_jobs(main, jobs, infos, parent=None, check_processed=True):
     """Run both warnings. `infos` is {source path: MediaInfo} from what the tab
-    already probed. Returns the jobs to queue ([] = nothing, e.g. cancelled)."""
+    already probed. `check_processed=False` leaves out the "already processed" warning (Replay merge's
+    internal "merge, then send to Clips" jobs). Returns the jobs to queue ([] = nothing, e.g. cancelled)."""
     jobs = list(jobs)
     s = main.settings
     if s.warn_duplicate_jobs and jobs:
@@ -134,7 +135,7 @@ def check_new_jobs(main, jobs, infos, parent=None):
             if choice == "skip":
                 gone = {id(j) for j, _ in dups}
                 jobs = [j for j in jobs if id(j) not in gone]
-    if s.warn_already_processed and jobs:
+    if s.warn_already_processed and check_processed and jobs:
         infos = {_norm(k): v for k, v in infos.items()}
         done = find_processed(jobs, infos)
         if done:
