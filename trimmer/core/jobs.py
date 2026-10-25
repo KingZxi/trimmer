@@ -823,16 +823,34 @@ def _rip_session(job: MergeJob, ctx: JobContext, session: mg.SessionPlan, out_ro
         for p in built:
             rip_unit(p, p.parent, p.stem)
         return outputs
+    # With no video saved, nothing else writes the info file, so the hidden
+    # build writes it and it is copied next to the rips.
+    want_log = opts.generate_clip_log and not job.make_video
     with tempfile.TemporaryDirectory(prefix="trimmer_rip_") as td:
         ctx.stage("Preparing the tracks to rip")
         plain = replace(job, compress=False, audio_tracks=None, mix_tracks=None, make_video=True,
                         rip_audio_tracks=[], rip_video=False,
-                        options=JobOptions(**{**asdict(opts), "generate_clip_log": False, "name_suffix": "",
+                        options=JobOptions(**{**asdict(opts), "generate_clip_log": want_log, "name_suffix": "",
                                               "delete_originals": False}))
         made = _build_session(plain, ctx, session, Path(td), merged_name, folder_name)
         dest.mkdir(parents=True, exist_ok=True)
         for p in made:
             rip_unit(p, dest, sanitize_filename(p.stem + opts.name_suffix))
+        if want_log and outputs and made:
+            if opts.merge_mode == "trim":
+                log, final = made[0].parent / "info.txt", dest / "info.txt"
+                note = ("No video was saved: each entry below matches the tracks ripped from it, "
+                        "named after it with \" - Track N\" or \" - video only\".")
+            else:
+                log = made[0].with_name(f"{made[0].stem} - info.txt")
+                final = dest / f"{sanitize_filename(made[0].stem + opts.name_suffix)} - info.txt"
+                note = "No video was saved: the times below apply to the tracks ripped from this session."
+            try:
+                text = log.read_text(encoding="utf-8")
+            except OSError:
+                text = None
+            if text is not None:
+                _write_text(final, f"{note}\n\n{text}")
     return outputs
 
 

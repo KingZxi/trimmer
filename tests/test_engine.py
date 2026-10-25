@@ -162,9 +162,14 @@ def test_merge_rips_without_the_merged_video(work):
     out = fresh(work, "out_merge_rips")
     c, logs = ctx()
     r = run_job(MergeJob([str(p) for p in clips[:4]], make_video=False, rip_audio_tracks=[1], rip_video=True,
-                         options=opts(out, rip_format="flac")), c)
+                         options=opts(out, rip_format="flac", generate_clip_log=True)), c)
     assert r.status == "done", logs
     assert not list(out.glob("*.mp4")) or all("video only" in f.name for f in out.glob("*.mp4"))
+    info_file = list(out.glob("Merged * - info.txt"))
+    assert len(info_file) == 1, sorted(out.iterdir())     # written even with no merged video
+    text = info_file[0].read_text(encoding="utf-8")
+    assert text.startswith("No video was saved")
+    assert abs(end_time(clip_ends(text)[28]) - 48.0) < 0.2
     audio = list(out.glob("Merged * - Track 2 (Desktop).flac"))
     assert len(audio) == 1, sorted(out.iterdir())
     na, has_v, dur = n_streams(audio[0])
@@ -174,6 +179,21 @@ def test_merge_rips_without_the_merged_video(work):
     na, has_v, dur = n_streams(vids[0])
     assert (na, has_v) == (0, True) and abs(dur - 48.0) < 0.35, dur
     assert len(r.outputs) == 2 and not list(out.glob("*.part*"))
+
+
+def test_trim_rips_without_video_write_the_info_file(work):
+    clips = fx.shared_replays(work / "shared")
+    out = fresh(work, "out_trim_rips")
+    c, logs = ctx()
+    r = run_job(MergeJob([str(p) for p in clips[:4]], make_video=False, rip_audio_tracks=[0],
+                         options=opts(out, merge_mode="trim", generate_clip_log=True)), c)
+    assert r.status == "done", logs
+    folder = next(out.glob("Session *"))
+    assert len(list(folder.glob("* - Track 1*"))) == 3, sorted(folder.iterdir())
+    assert not list(folder.glob("*.mp4"))
+    text = (folder / "info.txt").read_text(encoding="utf-8")
+    assert text.startswith("No video was saved")
+    assert len(clip_ends(text)) == 4
 
 
 def test_merge_rips_straight_from_the_real_output(work):
