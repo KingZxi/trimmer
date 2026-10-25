@@ -23,7 +23,7 @@ from typing import Callable, List, Optional, Tuple
 from . import ffmpeg as ff
 from . import merge as mg
 from . import packets as pk
-from .encode import EncodeSettings, predict_size, quality_label, resolve_quality, video_codec_args
+from .encode import EncodeSettings, can_copy_audio, predict_size, quality_label, resolve_quality, video_codec_args
 from .ffmpeg import CancelToken, Cancelled, FFmpegError, Progress
 from .render import (AudioPlan, Span, copy_compatible, output_ext, render, rip_audio,
                      snap_spans_to_keyframes, verify_output)
@@ -210,6 +210,8 @@ class JobResult:
     out_bytes: int = 0
     deleted: List[str] = field(default_factory=list)
     deleted_bytes: int = 0                # size of the originals that were really removed
+    deferred: List[str] = field(default_factory=list)   # originals a later queued job still needs
+    rip_from: str = ""                    # saved video still holding every source audio track untouched
     source_count: int = 0                 # clips this job read (a merge counts every replay)
 
 
@@ -219,11 +221,14 @@ class JobContext:
     def __init__(self, log: Callable[[str], None] = None,
                  progress: Callable[[str, Progress], None] = None,
                  resolve_conflict: Callable[[Path], str] = None,
-                 cancel: CancelToken = None):
+                 cancel: CancelToken = None, still_needed: Callable[[Path], bool] = None):
         self.log = log or (lambda m: None)
         self.progress = progress or (lambda stage, p: None)
         self.resolve_conflict = resolve_conflict or (lambda p: "rename")
         self.cancel = cancel or CancelToken()
+        # True for an original a later job in the queue still reads: its delete waits.
+        self.still_needed = still_needed or (lambda p: False)
+        self.skipped: List[str] = []      # outputs skipped by the name-clash policy
         self._sticky = None
 
     def stage(self, text: str):
@@ -263,6 +268,7 @@ def _claim(path: Path, ctx: JobContext, opts: JobOptions, sources: List[Path]) -
     if policy == "overwrite":
         return path
     if policy == "skip":
+        ctx.skipped.append(path.name)
         raise _Skip(f"{path.name} already exists; skipped")
     if policy == "cancel":
         raise Cancelled()
@@ -460,6 +466,7 @@ def _write_video(job: ClipJob, ctx: JobContext, info, spans: List[Span], out_dir
         done = _write_smart(job, ctx, info, spans, claimed, audio,
                             _clip_tag(job, info, audio, video_only=name_extra == VIDEO_ONLY))
         if done is not None:
+            _note_rip_source(res, done, info, audio, name_extra)
             return done
     if needs_exact:
         enc = EncodeSettings.from_dict(EXACT_SETTINGS.to_dict())
@@ -499,10 +506,11 @@ def _write_video(job: ClipJob, ctx: JobContext, info, spans: List[Span], out_dir
             ctx.log(f"Compressed output would be larger than the original ({format_size(r.last_size)} vs "
                     f"{format_size(original_equiv)}); keeping the original footage instead.")
             res.status = "reverted"
+            _snap(ctx, spans)
             final = _claim(out_dir / f"{stem}{_tags(job, spans)}{name_extra} (NOT COMPRESSED){ext}",
                            ctx, opts, [src])
-            return _write_copy(job, ctx, info, [Span(s.path, s.info, s.start, s.end) for s in spans],
-                               final, audio, res, _clip_tag(job, info, audio, video_only=name_extra == VIDEO_ONLY))
+            return _write_copy(job, ctx, info, spans, final, audio, res,
+                               _clip_tag(job, info, audio, video_only=name_extra == VIDEO_ONLY))
         if not r.ok:
             raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
         expected = kept
@@ -516,9 +524,20 @@ def _write_video(job: ClipJob, ctx: JobContext, info, spans: List[Span], out_dir
         _finish(part, final, src)
         return final
 
+    _snap(ctx, spans)       # before naming, so the kept times in the name are the real ones
     final = _claim(out_dir / f"{stem}{_tags(job, spans)}{name_extra}{ext}", ctx, opts, [src])
-    return _write_copy(job, ctx, info, spans, final, audio, res,
+    done = _write_copy(job, ctx, info, spans, final, audio, res,
                        _clip_tag(job, info, audio, video_only=name_extra == VIDEO_ONLY))
+    _note_rip_source(res, done, info, audio, name_extra)
+    return done
+
+
+def _note_rip_source(res: JobResult, video: Path, info, audio: AudioPlan, name_extra: str):
+    """Remember a saved video whose audio tracks are the source's, copied
+    untouched: audio rips taken from it line up with its picture exactly."""
+    if name_extra == "" and audio.tracks is None and not audio.needs_filter \
+            and all(can_copy_audio(t.codec, video.suffix.lower()) for t in info.audio):
+        res.rip_from = str(video)
 
 
 def _write_smart(job: ClipJob, ctx, info, spans: List[Span], final: Path,
@@ -548,8 +567,16 @@ def _write_smart(job: ClipJob, ctx, info, spans: List[Span], final: Path,
     return final
 
 
+def _snap(ctx, spans: List[Span]):
+    """Move each start back to its keyframe (a stream copy starts there anyway).
+    Mutates spans, so the caller sees where the video really starts."""
+    for note in snap_spans_to_keyframes(spans):
+        ctx.log(note)
+
+
 def _write_copy(job: ClipJob, ctx, info, spans: List[Span], final: Path, audio: AudioPlan,
                 res: JobResult, tag: str = "") -> Path:
+    """Stream copy of spans already snapped to keyframes (see _snap)."""
     src = Path(job.source)
     part = _part(final)
     want = [(s.start, s.end) for s in spans]
@@ -560,8 +587,6 @@ def _write_copy(job: ClipJob, ctx, info, spans: List[Span], final: Path, audio: 
         shutil.copyfile(src, part)
         ctx.cancel.check()
     else:
-        for note in snap_spans_to_keyframes(spans):
-            ctx.log(note)
         r = render(spans, part, encode=None, quality=None, audio=audio,
                    on_progress=ctx.reporter("Copying (no re-encode)"), cancel=ctx.cancel, tag=tag)
         if not r.ok:
@@ -620,30 +645,47 @@ def run_clip_job(job: ClipJob, ctx: JobContext) -> JobResult:
     outputs: List[Path] = []
     audio = _audio_plan(job, len(info.audio))
 
+    skips_before = len(ctx.skipped)
+
     def attempt(fn, *a):
         try:
             p = fn(*a)
             if p is not None:
                 outputs.append(p)
                 ctx.log(f"Saved {p.name}")
+            return p
         except _Skip as e:
             ctx.log(str(e))
             res.messages.append(str(e))
 
+    # Audio rips cover exactly what the saved video covers. A stream copy
+    # starts each part on the keyframe before the mark (_write_video moves
+    # these spans there too), and when the video kept the source's audio
+    # untouched the rips are taken straight from it.
+    kept_spans = spans
     if job.make_video and info.has_video:
-        attempt(_write_video, job, ctx, info, [Span(s.path, s.info, s.start, s.end) for s in spans],
-                out_dir, "", audio, res, label_cache)
+        vspans = [Span(s.path, s.info, s.start, s.end) for s in spans]
+        if attempt(_write_video, job, ctx, info, vspans, out_dir, "", audio, res, label_cache) is not None:
+            kept_spans = vspans
     if job.rip_video and info.has_video:
-        attempt(_write_video, job, ctx, info, [Span(s.path, s.info, s.start, s.end) for s in spans],
-                out_dir, VIDEO_ONLY, AudioPlan(tracks=[]), res, label_cache)
+        vspans = [Span(s.path, s.info, s.start, s.end) for s in spans]
+        if attempt(_write_video, job, ctx, info, vspans, out_dir, VIDEO_ONLY, AudioPlan(tracks=[]), res,
+                   label_cache) is not None and kept_spans is spans:
+            kept_spans = vspans
+    rip_spans = kept_spans
+    if job.rip_audio_tracks and job.segments and res.rip_from:
+        made = Path(res.rip_from)
+        rip_spans = [Span(made, ff.probe(made, use_cache=False), 0.0, None)]
+    if job.rip_audio_tracks and any(abs(a.start - b.start) > 0.0005 for a, b in zip(kept_spans, spans)):
+        ctx.log("Audio rips start where the video does (on the keyframe), so they line up with it.")
     for t in job.rip_audio_tracks:
         if t >= len(info.audio):
             continue
         tr = info.audio[t]
-        trim = _trim_tag(job.options, [(s.start, s.stop) for s in spans] if job.segments else [])
+        trim = _trim_tag(job.options, [(s.start, s.stop) for s in kept_spans] if job.segments else [])
         name = sanitize_filename(f"{_base_stem(job, src)}{trim} - Track {t + 1}"
                                  + (f" ({tr.title})" if tr.title else ""))
-        attempt(_write_rip, ctx, job.options, spans, t, name, out_dir, [src], src)
+        attempt(_write_rip, ctx, job.options, rip_spans, t, name, out_dir, [src], src)
 
     res.outputs = [str(p) for p in outputs]
     res.out_bytes = sum(p.stat().st_size for p in outputs if p.exists())
@@ -651,14 +693,31 @@ def run_clip_job(job: ClipJob, ctx: JobContext) -> JobResult:
         res.status = "skipped"
         return res
     if job.options.delete_originals:
-        _delete_sources(job, [src], outputs, ctx, res)
+        if len(ctx.skipped) > skips_before:
+            _keep_note(ctx, res, [src])
+        else:
+            _delete_sources(job, [src], outputs, ctx, res)
     return res
+
+
+def _keep_note(ctx, res: JobResult, sources: List[Path]):
+    """An output was skipped (its name was taken), so not everything asked for
+    was saved here and checked: the originals stay."""
+    msg = (f"Original{'s' if len(sources) > 1 else ''} kept ({', '.join(Path(s).name for s in sources)}): "
+           f"not every output was saved, because a file with its name already existed.")
+    ctx.log(msg)
+    res.messages.append(msg)
 
 
 def _delete_sources(job, sources: List[Path], outputs: List[Path], ctx, res: JobResult):
     out_set = {str(Path(o).resolve()) for o in outputs}
     for s in sources:
         if str(Path(s).resolve()) in out_set:
+            continue
+        if ctx.still_needed(Path(s)):
+            res.deferred.append(str(s))
+            ctx.log(f"Original {Path(s).name} kept for now: a later job in the queue still uses it. "
+                    f"It is removed once those jobs have saved their outputs.")
             continue
         try:
             size = Path(s).stat().st_size
@@ -694,24 +753,33 @@ def run_merge_job(job: MergeJob, ctx: JobContext) -> JobResult:
     _check_space(out_root, res.in_bytes)
     sessions = mg.plan_sessions(clips, mopts, ctx.log)
     outputs: List[Path] = []
+    complete: List[Path] = []       # clips of sessions where every output was saved
+    incomplete: List[Path] = []
     for si, session in enumerate(sessions, 1):
         ctx.cancel.check()
         ctx.log(f"Session {si}: {len(session.clips)} clip(s), {session.name}")
+        skips_before = len(ctx.skipped)
+        made = []
         try:
             name = job.output_name.strip()
             if name and len(sessions) > 1:
                 name = f"{name} ({si})"
-            outputs += _run_session(job, ctx, session, out_root, res, name)
+            made = _run_session(job, ctx, session, out_root, res, name)
+            outputs += made
         except _Skip as e:
             ctx.log(str(e))
             res.messages.append(str(e))
+        whole = made and len(ctx.skipped) == skips_before
+        (complete if whole else incomplete).extend(c.path for c in session.clips)
     res.outputs = [str(p) for p in outputs]
     res.out_bytes = sum(p.stat().st_size for p in outputs if p.exists())
     if not outputs:
         res.status = "skipped"
         return res
     if opts.delete_originals:
-        _delete_sources(job, [c.path for c in clips], outputs, ctx, res)
+        if incomplete:
+            _keep_note(ctx, res, incomplete)
+        _delete_sources(job, complete, outputs, ctx, res)
     return res
 
 

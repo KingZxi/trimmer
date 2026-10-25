@@ -96,7 +96,7 @@ def test_trim_and_merge_through_gui():
     pump(180, lambda: finished(w))
     assert [i.status for i in w.queue.items] == ["done", "done"]
     names = sorted(p.name for p in (WORK / "out").iterdir())
-    assert names == ["Best round.mp4", "My trim (trimmed 0m02s-0m08s).mp4"]
+    assert names == ["Best round.mp4", "My trim (trimmed 0m00s-0m08s).mp4"]   # copy starts on the keyframe
     w.close()
 
 
@@ -1082,3 +1082,40 @@ def test_queue_status_in_notes():
     w.queue.clear_finished()
     assert notes() == "" and m.tree.topLevelItem(0).text(4) == ""
     w.close()
+
+
+def test_queue_deletes_an_original_only_after_every_job_using_it():
+    from trimmer.core.jobs import ClipJob
+    from trimmer.gui.worker import QueueItem, QueueRunner
+    src_dir = WORK / "shared_src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    out = WORK / "out_shared"
+
+    def make():
+        p = src_dir / "clip.mp4"
+        shutil.copy(fx.single_clip(WORK / "src"), p)
+        return p
+
+    def job(p, seg, delete, policy="rename"):
+        o = JobOptions(output_dir=str(out), conflict_policy=policy, delete_originals=delete,
+                       permanent_delete=True)
+        return ClipJob(str(p), segments=[seg], options=o)
+
+    # Two jobs on one file, the first deletes it: the second still runs, then it goes.
+    p = make()
+    items = [QueueItem(job(p, (0, 4), True)), QueueItem(job(p, (6, 10), False))]
+    QueueRunner(items).run()
+    assert [i.status for i in items] == ["done", "done"], [i.log for i in items]
+    assert not p.exists()
+    assert items[0].result.deleted == [str(p)]
+
+    # The later job doesn't finish (its output name is taken and set to skip): the original stays.
+    p = make()
+    shutil.rmtree(out)
+    out.mkdir(parents=True)
+    (out / "clip (trimmed 0m04s-0m10s).mp4").write_bytes(b"taken")    # 6 s snaps to the keyframe at 4.08 s
+    items = [QueueItem(job(p, (0, 4), True)), QueueItem(job(p, (6, 10), False, "skip"))]
+    QueueRunner(items).run()
+    assert [i.status for i in items] == ["done", "skipped"], [i.log for i in items]
+    assert p.exists()
+    assert any("kept" in line for line in items[0].log)

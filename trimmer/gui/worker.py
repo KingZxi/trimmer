@@ -16,7 +16,7 @@ from ..core import jobs as J
 from ..core import savings
 from ..core.ffmpeg import Cancelled, CancelToken
 from ..core.journal import CompletedRecord, RunLog, save_queue
-from ..core.util import format_size
+from ..core.util import format_size, recycle_or_delete, same_file
 
 
 class QueueItem:
@@ -54,6 +54,10 @@ class QueueRunner(QThread):
         self._go.set()
         self._answer = None
         self._answer_event = threading.Event()
+        # Originals a finished job would have deleted but a later queued job
+        # still reads: [{"path", "item", "ok"}]. Removed once no waiting job
+        # needs them, and only if every job that used them saved its outputs.
+        self.pending_deletes = []
 
     # Called from the GUI thread.
     def cancel_current(self):
@@ -93,6 +97,49 @@ class QueueRunner(QThread):
         self._answer_event.wait()
         return self._answer or "rename"
 
+    # ------------------------------------------------------ deferred deletes
+    def _needed_later(self, path, item) -> bool:
+        return any(i is not item and i.status in ("queued", "running")
+                   and any(same_file(path, s) for s in i.job.sources()) for i in list(self.items))
+
+    def _after_job(self, item):
+        """Note a deferred original's new users, then remove what nothing waits for."""
+        if item.result is not None and item.result.deferred:
+            for p in item.result.deferred:
+                self.pending_deletes.append({"path": p, "item": item, "ok": True})
+        for d in self.pending_deletes:
+            if d["item"] is not item and any(same_file(d["path"], s) for s in item.job.sources()) \
+                    and item.status not in ("done", "reverted"):
+                d["ok"] = False
+                self._note(d["item"], f"Original {Path(d['path']).name} kept: {item.job.title} "
+                                      f"didn't finish ({item.status}).")
+        self._settle_deletes()
+
+    def _settle_deletes(self):
+        for d in list(self.pending_deletes):
+            if self._needed_later(d["path"], None):
+                continue
+            self.pending_deletes.remove(d)
+            owner, path = d["item"], Path(d["path"])
+            if not d["ok"] or not path.exists():
+                continue
+            try:
+                size = path.stat().st_size
+                what = recycle_or_delete(path, permanent=owner.job.options.permanent_delete)
+            except OSError as e:
+                self._note(owner, f"Couldn't remove original {path.name}: {e}")
+                continue
+            res = owner.result
+            savings.record_late_delete(res, size, self.count_kept())
+            res.deleted.append(str(path))
+            res.deleted_bytes += size
+            self._note(owner, f"Original {path.name} {what} (the later jobs that used it are done)")
+            self.item_finished.emit(owner.id)
+
+    def _note(self, item, msg):
+        item.log.append(msg)
+        self.item_log.emit(item.id, msg)
+
     def run(self):
         record = CompletedRecord()
         runlog = RunLog("per-job settings (see each job)")
@@ -122,7 +169,8 @@ class QueueRunner(QThread):
             def progress(stage, p, item=item):
                 self.item_progress.emit(item.id, stage, p.fraction, p.eta, p.size)
 
-            ctx = J.JobContext(log=log, progress=progress, resolve_conflict=self._ask, cancel=token)
+            ctx = J.JobContext(log=log, progress=progress, resolve_conflict=self._ask, cancel=token,
+                               still_needed=lambda p, item=item: self._needed_later(p, item))
             key = J.job_key(item.job)
             try:
                 res = J.run_job(item.job, ctx)
@@ -146,6 +194,7 @@ class QueueRunner(QThread):
                 runlog.record(item.job.title, "failed", f"unexpected error: {e}")
             self.current_token = None
             self.item_finished.emit(item.id)
+            self._after_job(item)
             save_queue([J.job_to_dict(i.job) for i in self.items if i.status == "queued"])
             if self.cancel_all:
                 cancelled = True
@@ -153,6 +202,7 @@ class QueueRunner(QThread):
                 self.hold_after = False
                 self._go.clear()
                 self.paused_changed.emit(True)
+        self._settle_deletes()
         t = runlog.totals
         saved = t["in_bytes"] - t["out_bytes"]
         summary = (f"{t.get('done', 0)} done, {t.get('reverted', 0)} kept original, "

@@ -797,7 +797,7 @@ class ClipsTab(QWidget):
         if diffs:
             worst = max(a - k for a, k in diffs)
             e.snap_note = (f"Without re-encoding, cuts start on the nearest keyframe before your mark "
-                           f"(up to {worst:.2f}s earlier), so nothing you marked is lost. "
+                           f"(up to {worst:.2f}s earlier), so nothing you marked is lost; audio rips start there too. "
                            f"Tick 'Frame-exact cuts' or 'Compress' for exact cuts.")
         e.snap_marks = [k for _, k in diffs]
         self._update_info()

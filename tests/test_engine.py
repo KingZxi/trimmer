@@ -288,7 +288,7 @@ def test_lossless_trim_never_loses_start(work):
     c, logs = ctx()
     r = run_job(ClipJob(str(src), segments=[(5.3, 12.0)], options=opts(out)), c)
     assert r.status == "done", logs
-    f = next(out.glob("* (trimmed 0m05s-0m12s).mp4"))
+    f = next(out.glob("* (trimmed 0m04s-0m12s).mp4"))    # named by where the copy really starts
     d = ff.probe(f, use_cache=False).duration
     assert 6.7 <= d <= 8.8, d            # snapped back to the keyframe at or before 5.3 s
     assert any("moved back" in l for l in logs)
@@ -416,8 +416,9 @@ def test_custom_output_names(work):
                         options=opts(out, name_suffix="_x", rip_format="wav")), c)
     assert r.status == "done", logs
     names = sorted(p.name for p in out.iterdir())
-    assert names == ["Big play (trimmed 0m02s-0m08s) - Track 1 (Mic).wav",
-                     "Big play (trimmed 0m02s-0m08s).mp4"], names
+    # A stream copy starts on the keyframe at 0.08 s; the name and the rip follow it.
+    assert names == ["Big play (trimmed 0m00s-0m08s) - Track 1 (Mic).wav",
+                     "Big play (trimmed 0m00s-0m08s).mp4"], names
     # Without the range setting the tag stays plain "(trimmed, ...)".
     r = run_job(ClipJob(str(src), segments=[(2, 8)], audio_tracks=[],
                         options=opts(out, add_trim_range=False)), c)
@@ -667,3 +668,92 @@ def test_savings_set_by_hand(stats):
     s = stats.set_saved(5 * 1024 ** 3)
     assert s.saved_bytes == 5 * 1024 ** 3 and stats.load().saved_bytes == 5 * 1024 ** 3
     assert "5.0 GB" in stats.summary_text()
+
+
+# ------------------------------------------------------------ data safety
+
+def _pcm(path, track=0):
+    import subprocess
+    import numpy as np
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-map", f"0:a:{track}", "-ac", "1",
+                          "-ar", "48000", "-f", "s16le", "-"], capture_output=True, check=True).stdout
+    return np.frombuffer(raw, np.int16).astype(float)
+
+
+def _rip_offset(video, rip, track):
+    """Seconds into the video's own audio track where the rip starts."""
+    import numpy as np
+    a, b = _pcm(video, track), _pcm(rip)
+    n = 48000 * 2
+    return max(range(0, 48000), key=lambda k: float(np.dot(a[k:k + n], b[:n]))) / 48000
+
+
+@pytest.mark.parametrize("exact", [False, True])
+def test_clip_rips_line_up_with_the_saved_video(work, exact):
+    src = fx.single_clip(work / "single")
+    out = fresh(work, f"out_rip_sync_{exact}")
+    c, logs = ctx()
+    r = run_job(ClipJob(str(src), segments=[(5.5, 12.0)], rip_audio_tracks=[0, 1],
+                        options=opts(out, exact_cuts=exact)), c)
+    assert r.status == "done", logs
+    video = next(out.glob("*.mp4"))
+    rips = sorted(out.glob("*.m4a"))
+    assert len(rips) == 2, logs
+    for t, rip in enumerate(rips):
+        assert _rip_offset(video, rip, t) == 0.0, (rip.name, logs)
+        assert abs(ff.probe(rip, use_cache=False).duration - ff.probe(video, use_cache=False).duration) < 0.1
+    if not exact:
+        # The copy starts on the keyframe at 4.08 s, and the names say so.
+        assert video.name == "Gameplay clip (trimmed 0m04s-0m12s).mp4", video.name
+        assert all(p.name.startswith("Gameplay clip (trimmed 0m04s-0m12s) - Track") for p in rips)
+
+
+def test_rips_without_a_video_keep_the_exact_marks(work):
+    src = fx.single_clip(work / "single")
+    out = fresh(work, "out_rip_only")
+    c, logs = ctx()
+    r = run_job(ClipJob(str(src), segments=[(5.5, 12.0)], make_video=False, rip_audio_tracks=[0],
+                        options=opts(out)), c)
+    assert r.status == "done", logs
+    rip = next(out.glob("*.m4a"))
+    assert abs(ff.probe(rip, use_cache=False).duration - 6.5) < 0.05
+
+
+def test_skipped_output_keeps_the_original(work):
+    d = fresh(work, "skip_keep")
+    src = d / "clip.mp4"
+    shutil.copy(fx.single_clip(work / "single"), src)
+    out = fresh(work, "out_skip_keep")
+    (out / "clip.mp4").write_bytes(b"something else")
+    c, logs = ctx()
+    r = run_job(ClipJob(str(src), rip_audio_tracks=[0],
+                        options=opts(out, conflict_policy="skip", delete_originals=True, permanent_delete=True)), c)
+    assert r.status == "done" and len(r.outputs) == 1, logs
+    assert src.exists() and not r.deleted
+    assert any("Original kept" in m for m in r.messages)
+
+
+def test_merge_keeps_the_clips_of_a_skipped_session(work):
+    d = fresh(work, "skip_session")
+    paths = fx.shared_replays(d)
+    out = fresh(work, "out_skip_session")
+    first = run_job(MergeJob(clip_paths=[str(p) for p in paths[:4]], options=opts(out)), ctx()[0])
+    Path(first.outputs[0]).write_bytes(b"not the merge")
+    c, logs = ctx()
+    r = run_job(MergeJob(clip_paths=[str(p) for p in paths],
+                         options=opts(out, conflict_policy="skip", delete_originals=True, permanent_delete=True)), c)
+    assert r.status == "done", logs
+    assert [Path(p).name for p in r.deleted] == [paths[4].name]     # the session that really saved
+    assert all(p.exists() for p in paths[:4])
+
+
+def test_delete_waits_when_a_later_job_needs_the_original(work):
+    d = fresh(work, "delete_wait")
+    src = d / "clip.mp4"
+    shutil.copy(fx.single_clip(work / "single"), src)
+    out = fresh(work, "out_delete_wait")
+    c, logs = ctx()
+    c.still_needed = lambda p: True
+    r = run_job(ClipJob(str(src), segments=[(0, 5)],
+                        options=opts(out, delete_originals=True, permanent_delete=True)), c)
+    assert r.status == "done" and src.exists() and r.deferred == [str(src)], logs

@@ -86,6 +86,18 @@ def record(result, count_kept: bool = False) -> Savings:
         return s
 
 
+def record_late_delete(result, nbytes: int, count_kept: bool = False) -> Savings:
+    """An original that `result`'s job kept for a later queued job was removed
+    after all. Call before adding nbytes to result.deleted_bytes."""
+    with _lock:
+        s = load()
+        if count_kept or result.status not in ("done", "reverted"):
+            return s            # already counted in full by record()
+        s.saved_bytes += nbytes - (0 if result.deleted_bytes else result.out_bytes)
+        _save(s)
+        return s
+
+
 def set_saved(saved_bytes: int) -> Savings:
     """Set the space saved total by hand, e.g. to count files deleted outside Trimmer."""
     with _lock:
