@@ -472,11 +472,22 @@ class ClipsTab(QWidget):
         vals = [(STAR if e.opts is not None else "") + e.path.name + (f"  →  {e.out_name}" if e.out_name else ""),
                 format_hms(i.duration), format_size(i.size),
                 f"{i.resolution} {i.fps:.0f}fps {i.video_codec}" if i.has_video else "audio only",
-                f"{len(i.audio)}: {tracks}", trim, e.note]
+                f"{len(i.audio)}: {tracks}", trim,
+                "; ".join(n for n in (self.main.queue.note_for([e.path]), e.note) if n)]
         for c, v in enumerate(vals):
             item = QTableWidgetItem(v)
             item.setToolTip(v if c else str(e.path) + (f"\n{OWN_TIP}" if e.opts is not None else ""))
             self.table.setItem(r, c, item)
+
+    def refresh_queue_notes(self):
+        """Show in Notes whether each clip is in the queue, and how its job went."""
+        col = len(COLS) - 1
+        for r, e in enumerate(self.entries):
+            text = "; ".join(n for n in (self.main.queue.note_for([e.path]), e.note) if n)
+            item = self.table.item(r, col)
+            if item is not None and item.text() != text:
+                item.setText(text)
+                item.setToolTip(text)
 
     def _kept(self, e):
         if not e.segments:

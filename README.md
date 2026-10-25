@@ -63,6 +63,10 @@ Drop in one clip or hundreds, either as files or whole folders. For each clip yo
 - **Pick the track you hear** in the preview. Right-click a track to make it
   the default for every clip you open until you close Trimmer.
 - **Estimate** the output size before you start.
+- **See what's queued**: once a clip is in the queue, its Notes column says
+  so ("Queue: Waiting", then "Working", "Done", "Failed" and so on), and the
+  same goes for sessions in Replay merge. The note goes away when the job
+  leaves the queue.
 - **Get rid of a clip you don't want**: right-click it and choose **Move to
   the Recycle Bin** (or press Shift+Delete). The file goes to the Recycle Bin,
   or is deleted outright if Settings say so, and leaves the list. Trimmer asks

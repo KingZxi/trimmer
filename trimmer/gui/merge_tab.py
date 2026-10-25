@@ -543,6 +543,7 @@ class MergeTab(QWidget):
         self._saved = []
         self._refresh_default_names()
         self._mark_stars()
+        self.refresh_queue_notes()
         self._sel()
         msg = f"Found {len(sessions)} session(s) in {sum(len(s.clips) for s in sessions)} clip(s)."
         if skipped:
@@ -559,6 +560,7 @@ class MergeTab(QWidget):
                                   "single clip, nothing to merge" if len(s.clips) == 1 else ""])
             it.setFlags(it.flags() | Qt.ItemIsEditable)
             it.setData(3, Qt.UserRole, "")
+            it.setData(4, Qt.UserRole, it.text(4))      # the note without the queue status
             it.setCheckState(0, Qt.Checked if len(s.clips) > 1 else Qt.Unchecked)
             if self._apply_saved(it, s):
                 selected.append(it)
@@ -573,6 +575,20 @@ class MergeTab(QWidget):
                 it.addChild(child)
             self.tree.addTopLevelItem(it)
         return selected
+
+    def refresh_queue_notes(self):
+        """Show in Notes whether each session is in the queue, and how its job went."""
+        self.tree.blockSignals(True)
+        try:
+            for i, s in enumerate(self.sessions[:self.tree.topLevelItemCount()]):
+                it = self.tree.topLevelItem(i)
+                text = "; ".join(n for n in (self.main.queue.note_for([c.path for c in s.clips]),
+                                             it.data(4, Qt.UserRole)) if n)
+                if it.text(4) != text:
+                    it.setText(4, text)
+                    it.setToolTip(4, text)
+        finally:
+            self.tree.blockSignals(False)
 
     # ---------------------------------------------------------- save state
     @staticmethod

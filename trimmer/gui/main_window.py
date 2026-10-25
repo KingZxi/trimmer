@@ -84,6 +84,8 @@ class MainWindow(QMainWindow):
         for tab in (self.clips, self.merge, self.queue):
             tab.status.connect(self.show_status)
         self.queue.running_changed.connect(self._running)
+        self.queue.jobs_changed.connect(self.clips.refresh_queue_notes)
+        self.queue.jobs_changed.connect(self.merge.refresh_queue_notes)
 
         self._toolbar()
         self.statusBar().setSizeGripEnabled(False)

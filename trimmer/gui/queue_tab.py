@@ -142,6 +142,7 @@ def sleep_pc():
 class QueueTab(QWidget):
     status = Signal(str)
     running_changed = Signal(bool)
+    jobs_changed = Signal()         # jobs added, started, finished or removed
 
     def __init__(self, main, parent=None):
         super().__init__(parent)
@@ -274,6 +275,17 @@ class QueueTab(QWidget):
         self.b_stop.setEnabled(running)
         sel = self._selected()
         self.b_retry.setEnabled(any(i.status in ("failed", "cancelled", "skipped") for i in sel))
+        self.jobs_changed.emit()
+
+    def note_for(self, sources) -> str:
+        """The queue status of the latest job made from exactly these files, for the Notes column of
+        Clips and Replay merge ("" when none is in the queue)."""
+        want = sorted(str(p) for p in sources)
+        item = next((i for i in reversed(self.items) if sorted(i.job.sources()) == want), None)
+        if item is None:
+            return ""
+        text = "Waiting (paused)" if item.status == "queued" and self.paused else STATUS_TEXT.get(item.status, item.status)
+        return "Queue: " + text
 
     # ---------------------------------------------------------------- rows
     def add_jobs(self, jobs, start=True):

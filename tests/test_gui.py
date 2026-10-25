@@ -1049,3 +1049,36 @@ def test_delete_originals_from_clips_and_replay_merge(monkeypatch):
     pump(30, lambda: len(m.paths) == n - 1 and sum(len(s.clips) for s in m.sessions) == n - 1)
     assert str(first.path) not in {str(p) for p in m.paths}
     w.close()
+
+
+def test_queue_status_in_notes():
+    (WORK / "qn_src").mkdir()
+    clip = fx.single_clip(WORK / "qn_src")
+    rep = WORK / "qn_rep"
+    fx.shared_replays(rep)
+    w = window(WORK / "qn_out")
+    w.queue.auto_start.setChecked(False)
+    w._route([str(clip)])
+    pump(15, lambda: w.clips.entries)
+    c = w.clips
+    notes = lambda: c.table.item(0, c.table.columnCount() - 1).text()
+    assert notes() == ""
+    w.tabs.setCurrentWidget(w.merge)
+    w._route([str(rep)])
+    pump(30, lambda: w.merge.sessions)
+    m = w.merge
+    assert m.tree.topLevelItem(1).text(4) == "single clip, nothing to merge"
+
+    c.queue(selected_only=False)
+    m.queue()
+    assert notes() == "Queue: Waiting"
+    assert m.tree.topLevelItem(0).text(4) == "Queue: Waiting"
+    assert m.tree.topLevelItem(1).text(4) == "single clip, nothing to merge"    # not ticked, not queued
+    w.queue.start()
+    pump(240, lambda: finished(w))
+    pump(5, lambda: m.tree.topLevelItem(0).text(4) == "Queue: Done")      # the last job's finish signal
+    assert notes() == "Queue: Done"
+    assert m.tree.topLevelItem(0).text(4) == "Queue: Done"
+    w.queue.clear_finished()
+    assert notes() == "" and m.tree.topLevelItem(0).text(4) == ""
+    w.close()
