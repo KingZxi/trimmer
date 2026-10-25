@@ -154,3 +154,15 @@ def test_tag_helpers_and_detection():
     assert tg.name_kinds("Clip (LOSSY), (CRF23, H265, medium)") == {"compress"}
     assert tg.name_kinds("Merged 2026-10-20 20-00-00 to 20-01-00") == {"merge"}
     assert tg.name_kinds("Plain") == set()
+
+
+def test_trim_range_names():
+    from trimmer.core.util import format_name_time, trim_range_label
+    assert format_name_time(5.3) == "0m05s" and format_name_time(12.7) == "0m13s"
+    assert format_name_time(65) == "1m05s" and format_name_time(3725) == "1h02m05s"
+    assert trim_range_label([(65, 92)]) == "trimmed 1m05s-1m32s"
+    assert trim_range_label([(12, 45), (70, 90), (100, 110), (120, 130)]) == \
+        "trimmed 0m12s-0m45s, 1m10s-1m30s +2 more"
+    label = f"Clip ({trim_range_label([(65, 92)])})"
+    assert tg.name_kinds(label) == {"trim"}
+    assert not any(ch in label for ch in '<>:"/\\|?*')

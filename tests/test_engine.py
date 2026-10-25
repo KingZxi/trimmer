@@ -62,7 +62,7 @@ def clip_ends(info_text):
     out = {}
     for block in body.strip().split("\n\n"):
         lines = block.splitlines()
-        sec = int(re.search(r"(\d\d)\.mp4", lines[0]).group(1))
+        sec = int(re.search(r"(\d\d)(?: \(trimmed [^)]*\))?\.mp4", lines[0]).group(1))
         out[sec] = next(l for l in lines if l.lstrip().startswith("Original clip ends"))
     return out
 
@@ -117,6 +117,10 @@ def test_packet_trim_mode(work):
     folder = next(out.glob("Session *"))
     files = sorted(folder.glob("*.mp4"))
     assert len(files) == 3
+    # The first two lose their ends to the next replay; the last is whole.
+    assert files[0].name.endswith(" (trimmed 0m00s-0m12s).mp4"), files
+    assert files[1].name.endswith(" (trimmed 0m00s-0m16s).mp4"), files
+    assert "(" not in files[2].name, files
     total = sum(ff.probe(f, use_cache=False).duration for f in files)
     assert abs(total - 48.0) < 0.35, total
     ends = clip_ends((folder / "info.txt").read_text(encoding="utf-8"))
@@ -223,6 +227,7 @@ def test_trim_mode_rips_per_piece(work):
     assert len(videos) == 3 and len(rips) == 3, sorted(folder.iterdir())
     assert all(n_streams(v)[0] == 1 for v in videos)
     assert sorted(f.name.split(" - Track")[0] for f in rips) == sorted(v.stem for v in videos)
+    assert sum("(trimmed 0m" in v.name for v in videos) == 2, videos
     assert abs(sum(n_streams(f)[2] for f in rips) - 48.0) < 0.5
     assert len(r.outputs) == 6
 
@@ -266,7 +271,10 @@ def test_fallback_trim_mode(work):
     r = run_job(MergeJob([str(p) for p in clips], options=opts(out, merge_mode="trim", generate_clip_log=True)), c)
     assert r.status == "done", logs
     folder = next(out.glob("Session *"))
-    assert len(list(folder.glob("*.mp4"))) == 3
+    files = sorted(folder.glob("*.mp4"))
+    assert len(files) == 3
+    # The fallback cuts later replays at their start; the first is whole.
+    assert "(" not in files[0].name and all(" (trimmed 0m" in f.name for f in files[1:]), files
     ends = clip_ends((folder / "info.txt").read_text(encoding="utf-8"))
     assert len(ends) == 3 and all(l.endswith("in this file") for l in ends.values()), ends
     assert abs(end_time(ends[0]) - 20.0) < 0.1, ends
@@ -280,7 +288,7 @@ def test_lossless_trim_never_loses_start(work):
     c, logs = ctx()
     r = run_job(ClipJob(str(src), segments=[(5.3, 12.0)], options=opts(out)), c)
     assert r.status == "done", logs
-    f = next(out.glob("*(trimmed).mp4"))
+    f = next(out.glob("* (trimmed 0m05s-0m12s).mp4"))
     d = ff.probe(f, use_cache=False).duration
     assert 6.7 <= d <= 8.8, d            # snapped back to the keyframe at or before 5.3 s
     assert any("moved back" in l for l in logs)
@@ -297,11 +305,13 @@ def test_cut_out_middle_and_audio_options(work):
     r = run_job(job, c)
     assert r.status == "done", logs
     vid = next(out.glob("*.mp4"))
+    assert " (trimmed 0m00s-0m04s, 0m10s-0m16s) (mixed audio) (LOSSY), (CRF30" in vid.name, vid.name
     info = ff.probe(vid, use_cache=False)
     assert abs(info.duration - 10.0) < 0.15
     assert len(info.audio) == 3 and info.audio[0].title == "Mixed"
     wavs = sorted(out.glob("*.wav"))
     assert len(wavs) == 2 and "(Mic)" in wavs[0].name
+    assert wavs[0].name.endswith(" (trimmed 0m00s-0m04s, 0m10s-0m16s) - Track 1 (Mic).wav"), wavs[0].name
     assert abs(ff.probe(wavs[0], use_cache=False).duration - 10.0) < 0.15
 
 
@@ -406,7 +416,13 @@ def test_custom_output_names(work):
                         options=opts(out, name_suffix="_x", rip_format="wav")), c)
     assert r.status == "done", logs
     names = sorted(p.name for p in out.iterdir())
-    assert names == ["Big play - Track 1 (Mic).wav", "Big play.mp4"], names
+    assert names == ["Big play (trimmed 0m02s-0m08s) - Track 1 (Mic).wav",
+                     "Big play (trimmed 0m02s-0m08s).mp4"], names
+    # Without the range setting the tag stays plain "(trimmed, ...)".
+    r = run_job(ClipJob(str(src), segments=[(2, 8)], audio_tracks=[],
+                        options=opts(out, add_trim_range=False)), c)
+    assert r.status == "done", logs
+    assert Path(r.outputs[0]).name == f"{src.stem} (trimmed, no audio).mp4", r.outputs
 
     clips = fx.shared_replays(work / "shared")
     r = run_job(MergeJob([str(p) for p in clips[:4]], output_name="Clutch round",
@@ -492,7 +508,7 @@ def test_smart_cut_is_frame_exact_and_keeps_original_frames(work):
     r = run_job(ClipJob(str(src), segments=[(5.3, 12.7)], options=opts(out, exact_cuts=True)), c)
     assert r.status == "done", logs
     assert any(l.startswith("Smart cut: re-encoding") for l in logs), logs
-    f = next(out.glob("*(trimmed).mp4"))
+    f = next(out.glob("* (trimmed 0m05s-0m13s).mp4"))
     info = ff.probe(f, use_cache=False)
     assert abs(info.duration - 7.4) < 0.02, info.duration
     assert [a.title for a in info.audio] == ["Mic", "Desktop"]

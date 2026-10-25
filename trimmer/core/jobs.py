@@ -30,7 +30,7 @@ from .render import (AudioPlan, Span, copy_compatible, output_ext, render, rip_a
 from .smartcut import SmartCutError, smart_render
 from .tag import build_tag, describe_encode, tag_args
 from .util import (VIDEO_EXTENSIONS, format_hms_ms, format_size, recycle_or_delete, safe_unlink, same_file,
-                   sanitize_filename, unique_path)
+                   sanitize_filename, trim_range_label, unique_path)
 
 VIDEO_ONLY = " - video only"      # name extra of the video-only rip
 
@@ -48,6 +48,7 @@ class JobOptions:
     permanent_delete: bool = False
     name_suffix: str = ""
     add_operation_tags: bool = True
+    add_trim_range: bool = True          # the kept times in the "(trimmed ...)" name tag
     container: str = "same"
     exact_cuts: bool = False
     smart_cut: bool = True               # exact cuts re-encode only around each cut
@@ -298,17 +299,31 @@ def _base_stem(job: ClipJob, src: Path) -> str:
     return name or sanitize_filename(src.stem + job.options.name_suffix)
 
 
-def _tags(job: ClipJob, trimmed: bool) -> str:
-    if not job.options.add_operation_tags or job.output_name.strip():
+def _trim_tag(opts: JobOptions, ranges) -> str:
+    """'(trimmed 1m05s-1m32s)' for the kept (start, stop) ranges, or "" when
+    nothing was cut or the times are turned off in Settings."""
+    if not (opts.add_operation_tags and opts.add_trim_range and ranges):
         return ""
+    return f" ({trim_range_label(ranges)})"
+
+
+def _tags(job: ClipJob, spans: List[Span]) -> str:
+    if not job.options.add_operation_tags:
+        return ""
+    if job.output_name.strip():     # a typed name only gains the kept times
+        return _trim_tag(job.options, [(s.start, s.stop) for s in spans] if job.segments else [])
     t = []
-    if trimmed:
-        t.append("trimmed")
     if job.audio_tracks == [] and job.make_video:
         t.append("no audio")
     if job.mix_tracks:
         t.append("mixed audio")
-    return f" ({', '.join(t)})" if t else ""
+    rest = f" ({', '.join(t)})" if t else ""
+    if not job.segments:
+        return rest
+    if not job.options.add_trim_range:
+        return f" ({', '.join(['trimmed'] + t)})"
+    # The range has its own commas, so the other tags go in their own brackets.
+    return _trim_tag(job.options, [(s.start, s.stop) for s in spans]) + rest
 
 
 def _clip_tag(job: ClipJob, info, audio: AudioPlan, enc=None, q=None, video_only: bool = False) -> str:
@@ -441,7 +456,7 @@ def _write_video(job: ClipJob, ctx: JobContext, info, spans: List[Span], out_dir
     needs_exact = trimmed and opts.exact_cuts and enc is None
     claimed = None
     if needs_exact and opts.smart_cut:
-        claimed = _claim(out_dir / f"{stem}{_tags(job, trimmed)}{name_extra}{ext}", ctx, opts, [src])
+        claimed = _claim(out_dir / f"{stem}{_tags(job, spans)}{name_extra}{ext}", ctx, opts, [src])
         done = _write_smart(job, ctx, info, spans, claimed, audio,
                             _clip_tag(job, info, audio, video_only=name_extra == VIDEO_ONLY))
         if done is not None:
@@ -462,7 +477,7 @@ def _write_video(job: ClipJob, ctx: JobContext, info, spans: List[Span], out_dir
         if q is not None and job.compress:
             ctx.log(f"Using {'CQ' if enc.encoder != 'software' else 'CRF'} {q}"
                     + (f" (chosen by {method})" if method else ""))
-        final = claimed or _claim(out_dir / f"{stem}{_tags(job, trimmed)}{name_extra}{label}{ext}",
+        final = claimed or _claim(out_dir / f"{stem}{_tags(job, spans)}{name_extra}{label}{ext}",
                                   ctx, opts, [src])
         part = _part(final)
         tag = _clip_tag(job, info, audio, enc if job.compress else None, q, name_extra == VIDEO_ONLY)
@@ -484,7 +499,7 @@ def _write_video(job: ClipJob, ctx: JobContext, info, spans: List[Span], out_dir
             ctx.log(f"Compressed output would be larger than the original ({format_size(r.last_size)} vs "
                     f"{format_size(original_equiv)}); keeping the original footage instead.")
             res.status = "reverted"
-            final = _claim(out_dir / f"{stem}{_tags(job, trimmed)}{name_extra} (NOT COMPRESSED){ext}",
+            final = _claim(out_dir / f"{stem}{_tags(job, spans)}{name_extra} (NOT COMPRESSED){ext}",
                            ctx, opts, [src])
             return _write_copy(job, ctx, info, [Span(s.path, s.info, s.start, s.end) for s in spans],
                                final, audio, res, _clip_tag(job, info, audio, video_only=name_extra == VIDEO_ONLY))
@@ -501,7 +516,7 @@ def _write_video(job: ClipJob, ctx: JobContext, info, spans: List[Span], out_dir
         _finish(part, final, src)
         return final
 
-    final = _claim(out_dir / f"{stem}{_tags(job, trimmed)}{name_extra}{ext}", ctx, opts, [src])
+    final = _claim(out_dir / f"{stem}{_tags(job, spans)}{name_extra}{ext}", ctx, opts, [src])
     return _write_copy(job, ctx, info, spans, final, audio, res,
                        _clip_tag(job, info, audio, video_only=name_extra == VIDEO_ONLY))
 
@@ -625,7 +640,8 @@ def run_clip_job(job: ClipJob, ctx: JobContext) -> JobResult:
         if t >= len(info.audio):
             continue
         tr = info.audio[t]
-        name = sanitize_filename(f"{_base_stem(job, src)} - Track {t + 1}"
+        trim = _trim_tag(job.options, [(s.start, s.stop) for s in spans] if job.segments else [])
+        name = sanitize_filename(f"{_base_stem(job, src)}{trim} - Track {t + 1}"
                                  + (f" ({tr.title})" if tr.title else ""))
         attempt(_write_rip, ctx, job.options, spans, t, name, out_dir, [src], src)
 
@@ -830,12 +846,12 @@ def _rip_session(job: MergeJob, ctx: JobContext, session: mg.SessionPlan, out_ro
         ctx.stage("Preparing the tracks to rip")
         plain = replace(job, compress=False, audio_tracks=None, mix_tracks=None, make_video=True,
                         rip_audio_tracks=[], rip_video=False,
-                        options=JobOptions(**{**asdict(opts), "generate_clip_log": want_log, "name_suffix": "",
+                        options=JobOptions(**{**asdict(opts), "generate_clip_log": want_log,
                                               "delete_originals": False}))
         made = _build_session(plain, ctx, session, Path(td), merged_name, folder_name)
         dest.mkdir(parents=True, exist_ok=True)
         for p in made:
-            rip_unit(p, dest, sanitize_filename(p.stem + opts.name_suffix))
+            rip_unit(p, dest, p.stem)
         if want_log and outputs and made:
             if opts.merge_mode == "trim":
                 log, final = made[0].parent / "info.txt", dest / "info.txt"
@@ -843,7 +859,7 @@ def _rip_session(job: MergeJob, ctx: JobContext, session: mg.SessionPlan, out_ro
                         "named after it with \" - Track N\" or \" - video only\".")
             else:
                 log = made[0].with_name(f"{made[0].stem} - info.txt")
-                final = dest / f"{sanitize_filename(made[0].stem + opts.name_suffix)} - info.txt"
+                final = dest / f"{made[0].stem} - info.txt"
                 note = "No video was saved: the times below apply to the tracks ripped from this session."
             try:
                 text = log.read_text(encoding="utf-8")
@@ -869,9 +885,11 @@ def _packet_session(job, ctx, session, pj: pk.PacketJoin, out_root, merged_name,
             for i, p in enumerate(pj.pieces):
                 ctx.cancel.check()
                 single = pk.PacketJoin([pk.Piece(p.clip, p.video, p.audio, p.stop, p.audio_stop, None)], [], True)
-                outputs.append(_packet_output(job, ctx, single, folder, p.clip.path.stem, ext, enc, audio, srcs,
-                                              Path(td) / str(i), stage=f"Clip {i + 1} of {len(pj.pieces)}"))
                 kept_s = p.video.pts[p.stop] if p.stop is not None else p.clip.duration
+                trim = _trim_tag(opts, [(0.0, kept_s)] if p.stop is not None else [])
+                outputs.append(_packet_output(job, ctx, single, folder, p.clip.path.stem, ext, enc, audio, srcs,
+                                              Path(td) / str(i), stage=f"Clip {i + 1} of {len(pj.pieces)}",
+                                              trim=trim))
                 written.append((p.clip, outputs[-1].name, kept_s))
             if opts.generate_clip_log:
                 _write_text(folder / "info.txt", _packet_log(session, pj, written, trim_mode=True))
@@ -886,7 +904,7 @@ def _packet_session(job, ctx, session, pj: pk.PacketJoin, out_root, merged_name,
 
 
 def _packet_output(job, ctx, pj: pk.PacketJoin, folder: Path, stem: str, ext: str, enc, audio: AudioPlan,
-                   srcs, tmpdir: Path, stage: str) -> Path:
+                   srcs, tmpdir: Path, stage: str, trim: str = "") -> Path:
     tmpdir.mkdir(parents=True, exist_ok=True)
     vlist, alist = pk.write_concat_lists(pj, tmpdir)
     info = pj.pieces[0].clip.info
@@ -899,7 +917,7 @@ def _packet_output(job, ctx, pj: pk.PacketJoin, folder: Path, stem: str, ext: st
         q, method = resolve_quality(pj.pieces[0].clip.path, info, enc, ctx.cancel, ctx.log) \
             if enc.mode == "lossy" else (None, None)
         label = _qlabel(job.options, enc, q, method)
-    final = _claim(folder / f"{sanitize_filename(stem + job.options.name_suffix)}{label}{ext}",
+    final = _claim(folder / f"{sanitize_filename(stem + job.options.name_suffix)}{trim}{label}{ext}",
                    ctx, job.options, srcs)
     part = _part(final)
     tag = _merge_tag(job, info.trimmer_tag, audio, n_avail, enc, q)
@@ -1095,7 +1113,8 @@ def _fallback_session(job, ctx, session: mg.SessionPlan, out_root, merged_name, 
             q, method = (resolve_quality(c.path, c.info, use_enc, ctx.cancel, ctx.log)
                          if use_enc is not None and use_enc.mode == "lossy" else (None, None))
             label = _qlabel(job.options, use_enc, q, method) if enc is not None else ""
-            final = _claim(folder / f"{sanitize_filename(c.path.stem + opts.name_suffix)}{label}{ext}",
+            trim = _trim_tag(opts, [(cut, c.info.duration)] if cut > 0.01 else [])
+            final = _claim(folder / f"{sanitize_filename(c.path.stem + opts.name_suffix)}{trim}{label}{ext}",
                            ctx, opts, srcs)
             part = _part(final)
             ctx.progress(f"Clip {i + 1} of {len(plan)}", Progress(None, 0, None, None, None))

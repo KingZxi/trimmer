@@ -96,7 +96,7 @@ def test_trim_and_merge_through_gui():
     pump(180, lambda: finished(w))
     assert [i.status for i in w.queue.items] == ["done", "done"]
     names = sorted(p.name for p in (WORK / "out").iterdir())
-    assert names == ["Best round.mp4", "My trim.mp4"]
+    assert names == ["Best round.mp4", "My trim (trimmed 0m02s-0m08s).mp4"]
     w.close()
 
 
@@ -107,8 +107,16 @@ def test_settings_cancel_and_restore():
     w = window(out)
     d = SettingsDialog(w.settings, w.encoders, w)
     d.packets.setChecked(False)
+    assert d.trim_range.isChecked() and d.trim_range.isEnabled()
+    d.tags.setChecked(False)
+    assert not d.trim_range.isEnabled()          # only means something with name tags on
+    d.tags.setChecked(True)
+    d.trim_range.setChecked(False)
     d._save()
     assert JobOptions.from_settings(AppSettings.load()).use_packet_matching is False
+    assert JobOptions.from_settings(AppSettings.load()).add_trim_range is False
+    w.settings.add_trim_range = True
+    w.settings.save()
 
     w._route([str(src)])
     pump(15, lambda: w.clips.entries)

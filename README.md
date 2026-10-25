@@ -52,6 +52,11 @@ Drop in one clip or hundreds, either as files or whole folders. For each clip yo
 - **Rip** audio tracks (original, WAV, FLAC, MP3, M4A) or the video on its own.
 - Compressed files get the settings in their name, e.g. `(LOSSY), (CQ28
   auto2, H265 NVENC, medium)`. Turn this off in Settings → General.
+- Trimmed files get the kept times in their name, e.g.
+  `(trimmed 1m05s-1m32s)`; with several parts the first two are listed, then
+  `+2 more`. This also applies to each trimmed clip in Replay merge's keep
+  separate mode, and to names you type yourself. Turn the times off
+  (plain `(trimmed)`) in Settings → General.
 - **Name** the output: type in "Save as" (or press F2). It starts with the
   original name so you can add to it (turn this off in Settings). Ripped
   tracks use the same name.

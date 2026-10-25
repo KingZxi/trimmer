@@ -73,6 +73,23 @@ def format_hms_ms(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}.{ms:03d}" if h else f"{m}:{s:02d}.{ms:03d}"
 
 
+def format_name_time(seconds: float) -> str:
+    """A time for file names, which can't hold ':' on Windows: '1m05s', '1h02m05s'.
+    Rounded to the nearest second."""
+    total = max(0, int(seconds + 0.5))
+    h, rem = divmod(total, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}h{m:02d}m{sec:02d}s" if h else f"{m}m{sec:02d}s"
+
+
+def trim_range_label(ranges, shown: int = 2) -> str:
+    """'trimmed 1m05s-1m32s' for the kept (start, stop) ranges, listing the
+    first `shown` and counting the rest."""
+    parts = [f"{format_name_time(a)}-{format_name_time(b)}" for a, b in ranges[:shown]]
+    more = f" +{len(ranges) - shown} more" if len(ranges) > shown else ""
+    return f"trimmed {', '.join(parts)}{more}"
+
+
 def parse_timecode(text: str) -> float:
     """Parse '75', '1:15', '1:15.5' or '0:01:15.500' into seconds."""
     text = text.strip()

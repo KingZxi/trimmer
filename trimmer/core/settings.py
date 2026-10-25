@@ -33,6 +33,7 @@ class AppSettings:
     permanent_delete: bool = False        # False = Recycle Bin
     name_suffix: str = ""
     add_operation_tags: bool = True       # "(trimmed)", "(no audio)" ...
+    add_trim_range: bool = True           # "(trimmed 1m05s-1m32s)" instead of "(trimmed)"
     prefill_names: bool = True            # rename boxes start with the original name
     add_quality_label: bool = True        # compression details in compressed file names
     container: str = "same"              # same | .mp4 | .mkv
