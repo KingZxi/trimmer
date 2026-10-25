@@ -14,12 +14,14 @@ def close_dialog(request):
         return
     from trimmer.gui import main_window
     from trimmer.core.journal import clear_queue
-    from trimmer.core.session import clear_session
+    from trimmer.core.session import autosave_path, clear_session
     real = main_window.ask_close_choice
     main_window.ask_close_choice = lambda parent: ("save", False)
+    main_window.MainWindow.AUTOSAVE_MS = 0      # tests call autosave() themselves; no stray timers
     yield
     main_window.ask_close_choice = real
     clear_session()
+    clear_session(autosave_path())
     clear_queue()
 
 

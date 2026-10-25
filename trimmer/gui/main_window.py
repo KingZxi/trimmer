@@ -1,12 +1,13 @@
 """Main window: the Clips / Replay merge / Queue tabs, drag and drop,
 the toolbar and start-up checks."""
 
+import json
 import shutil
 import tempfile
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QLabel, QMainWindow, QMessageBox,
                                QSizePolicy, QSystemTrayIcon, QTabWidget, QToolBar, QWidget)
@@ -14,9 +15,9 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QLabel, QMa
 from ..core import ffmpeg as ff
 from ..core import jobs as J
 from ..core.journal import clear_queue, load_queue, save_queue
-from ..core.session import clear_session, load_session, save_session
+from ..core.session import autosave_path, clear_session, load_session, save_session
 from ..core.settings import AppSettings
-from ..core.util import VIDEO_EXTENSIONS, find_video_files
+from ..core.util import VIDEO_EXTENSIONS, find_video_files, recycle_or_delete, same_file
 from .clips_tab import ClipsTab
 from .merge_tab import PREVIEW_PREFIX, MergeTab
 from .queue_tab import QueueTab
@@ -55,6 +56,8 @@ def ask_close_choice(parent):
 
 
 class MainWindow(QMainWindow):
+    AUTOSAVE_MS = 10000          # how often what's open is saved in case of a crash (0: never)
+
     def __init__(self, settings: AppSettings = None):
         super().__init__()
         self.settings = settings or AppSettings.load()
@@ -88,6 +91,9 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.out_label)
         self._show_output()
         self.show_status("Drop clips or folders anywhere in this window.")
+        self._autosaved = None          # the last autosave written, to skip unchanged ones
+        self.autosave_timer = QTimer(self)
+        self.autosave_timer.timeout.connect(self.autosave)
 
     # -------------------------------------------------------------- toolbar
     def _toolbar(self):
@@ -154,6 +160,46 @@ class MainWindow(QMainWindow):
         """Add files to the Clips tab and show it (used by Replay merge's right-click menu)."""
         self.tabs.setCurrentWidget(self.clips)
         self.clips.add_paths([Path(p) for p in paths])
+
+    def delete_originals(self, paths, parent=None) -> list:
+        """Move files to the Recycle Bin (or delete them, as Settings say) after asking. Files a waiting or
+        running job still needs are left alone. Returns the paths that are really gone."""
+        parent = parent or self
+        paths = list(dict.fromkeys(Path(p) for p in paths))
+        busy = [p for p in paths if any(same_file(p, src) for i in self.queue.items
+                                        if i.status in ("queued", "running") for src in i.job.sources())]
+        paths = [p for p in paths if p not in busy]
+        if busy:
+            QMessageBox.information(
+                parent, "In the queue",
+                f"{len(busy)} file(s) are still waiting or being saved in the queue and were left alone:\n\n"
+                + "\n".join(p.name for p in busy[:8]) + (f"\n… and {len(busy) - 8} more" if len(busy) > 8 else ""))
+        if not paths:
+            return []
+        permanent = self.settings.permanent_delete
+        names = "\n".join(p.name for p in paths[:8]) + (f"\n… and {len(paths) - 8} more" if len(paths) > 8 else "")
+        if permanent:
+            title, text = "Delete permanently?", (f"Permanently delete {len(paths)} file(s)? "
+                                                  f"This can't be undone.\n\n{names}")
+        else:
+            title, text = "Move to Recycle Bin?", f"Move {len(paths)} file(s) to the Recycle Bin?\n\n{names}"
+        if QMessageBox.question(parent, title, text, QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.No) != QMessageBox.Yes:
+            return []
+        gone, errors = [], []
+        for p in paths:
+            try:
+                recycle_or_delete(p, permanent=permanent)
+                gone.append(p)
+            except OSError as e:
+                errors.append(f"{p.name}: {e}")
+        if errors:
+            QMessageBox.warning(parent, "Some files weren't removed",
+                                f"{len(errors)} file(s) couldn't be removed and stay in the list:\n\n"
+                                + "\n".join(errors[:8]))
+        if gone:
+            self.show_status(f"{len(gone)} file(s) " + ("deleted." if permanent else "moved to the Recycle Bin."))
+        return gone
 
     def add_files_dialog(self):
         exts = " ".join(f"*{e}" for e in sorted(VIDEO_EXTENSIONS))
@@ -247,8 +293,10 @@ class MainWindow(QMainWindow):
         t.done.connect(found)
         self.tasks.append(t)
         t.start()
-        if not self.restore_session():
+        if not self.restore_session() and not self.restore_autosave():
             self._restore_queue()
+        if self.AUTOSAVE_MS:
+            self.autosave_timer.start(self.AUTOSAVE_MS)
 
     # ----------------------------------------------------------- save state
     def restore_session(self) -> bool:
@@ -258,6 +306,54 @@ class MainWindow(QMainWindow):
         if state is None:
             return False
         clear_session()
+        clear_session(autosave_path())      # a clean close leaves none; never offer both
+        self._restore_state(state)
+        return True
+
+    def _state(self) -> dict:
+        return {"clips": self.clips.snapshot(), "merge": self.merge.snapshot()}
+
+    def autosave(self):
+        """Save what's open in Clips and Replay merge, so a crash or power cut doesn't lose it. The
+        queue saves itself (queue.json). Nothing open: no file."""
+        state = self._state()
+        if not (state["clips"]["entries"] or state["merge"]["paths"]):
+            if self._autosaved is not None or autosave_path().exists():
+                clear_session(autosave_path())
+                self._autosaved = None
+            return
+        text = json.dumps(state, sort_keys=True)
+        if text != self._autosaved and save_session(state, autosave_path()):
+            self._autosaved = text
+
+    def restore_autosave(self) -> bool:
+        """After a crash: offer what was open, along with the jobs still waiting in the queue."""
+        state = load_session(autosave_path())
+        if state is None:
+            return False
+        clips = state.get("clips") if isinstance(state.get("clips"), dict) else {}
+        merge = state.get("merge") if isinstance(state.get("merge"), dict) else {}
+        n_clips = len(clips.get("entries") or [])
+        n_reps = len(merge.get("paths") or [])
+        if not (n_clips or n_reps):
+            clear_session(autosave_path())
+            return False
+        queue = load_queue()
+        what = [f"{n} {noun}{'s' if n != 1 else ''}" for n, noun in
+                ((n_clips, "clip"), (n_reps, "replay"), (len(queue), "waiting job")) if n]
+        ans = QMessageBox.question(
+            self, "Trimmer didn't close properly",
+            "Trimmer or the PC seems to have stopped without closing Trimmer first. Bring back what was "
+            f"open ({', '.join(what)}) with your trims, names and options?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        clear_session(autosave_path())
+        if ans != QMessageBox.Yes:
+            clear_queue()
+            return True
+        self._restore_state({**state, "queue": queue}, start=False)
+        return True
+
+    def _restore_state(self, state: dict, start=True):
         missing = []
         clips, merge = state.get("clips"), state.get("merge")
         if isinstance(clips, dict):
@@ -275,7 +371,7 @@ class MainWindow(QMainWindow):
         jobs = [j for j in jobs if all(Path(p).exists() for p in j.sources())]
         clear_queue()
         if jobs:
-            self.queue.add_jobs(jobs, start=True)
+            self.queue.add_jobs(jobs, start=start)
         self._running(self.queue.is_running())
         if clips and clips.get("entries"):
             self.tabs.setCurrentWidget(self.clips)
@@ -285,7 +381,6 @@ class MainWindow(QMainWindow):
                 self, "Some files are gone",
                 f"{len(names)} saved file(s) no longer exist and were skipped:\n\n"
                 + "\n".join(names[:12]) + (f"\n… and {len(names) - 12} more" if len(names) > 12 else ""))
-        return True
 
     def _restore_queue(self):
         saved = load_queue()
@@ -344,10 +439,11 @@ class MainWindow(QMainWindow):
             self.queue.stop_all()
             self.queue.runner.wait(15000)
             save_queue(pending)
+        self.autosave_timer.stop()
+        clear_session(autosave_path())      # a clean close: nothing to recover next time
         if choice == "save":
             self.queue.closing = True       # the jobs live in the saved state now
-            saved = save_session({"clips": self.clips.snapshot(), "merge": self.merge.snapshot(),
-                                  "queue": pending})
+            saved = save_session({**self._state(), "queue": pending})
             if saved:
                 clear_queue()
         else:

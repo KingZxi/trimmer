@@ -938,3 +938,114 @@ def test_new_replay_keeps_session_options():
     assert m.tree.topLevelItem(1).checkState(0) == Qt.Checked          # unchanged session: tick kept
     assert m.compress.isChecked() and m.g_opts.title() == f"Options for {m.sessions[0].name}"
     w.close()
+
+
+def test_autosave_brings_back_work_after_a_crash(monkeypatch):
+    from trimmer.core.session import autosave_path
+    (WORK / "as_src").mkdir()
+    clip = fx.single_clip(WORK / "as_src")
+    rep = WORK / "as_rep"
+    fx.shared_replays(rep)
+    w = window(WORK / "as_out")
+    w.queue.auto_start.setChecked(False)
+    w.autosave()
+    assert not autosave_path().exists()              # nothing open: no file
+    w._route([str(clip)])
+    pump(15, lambda: w.clips.entries)
+    w.clips.entries[0].segments = [(1.0, 4.0)]
+    w.clips.entries[0].out_name = "Crash test"
+    w.tabs.setCurrentWidget(w.merge)
+    w._route([str(rep)])
+    pump(30, lambda: w.merge.sessions)
+    w.merge.tree.topLevelItem(1).setText(3, "Ace")
+    w.queue.add_jobs(w.clips.build_jobs(w.clips.entries), start=False)
+    w.autosave()
+    assert autosave_path().exists()
+    # "crash": the window goes away without closing, leaving the autosave and the queue file
+    w.autosave_timer.stop()
+    w.queue.closing = True
+    w.hide()
+
+    asked = []
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: asked.append(a[2]) or QMessageBox.Yes))
+    w2 = window(WORK / "as_out")
+    assert len(asked) == 1 and "1 clip, " in asked[0] and "1 waiting job" in asked[0]
+    assert not autosave_path().exists()
+    pump(30, lambda: w2.clips.entries and w2.merge.sessions)
+    e = w2.clips.entries[0]
+    assert e.segments == [(1.0, 4.0)] and e.out_name == "Crash test"
+    assert w2.merge.tree.topLevelItem(1).data(3, Qt.UserRole) == "Ace"
+    assert [i.status for i in w2.queue.items] == ["queued"] and not w2.queue.is_running()
+    # an autosave while the restore is still loading keeps the clips that haven't loaded yet
+    w2.clips._restore["x.mp4"] = {"path": "x.mp4", "segments": []}
+    assert {d["path"] for d in w2.clips.snapshot()["entries"]} == {str(clip), "x.mp4"}
+    w2.clips._restore.clear()
+    w2.autosave()
+    assert autosave_path().exists()
+    w2.settings.on_close = "discard"
+    w2.close()                                        # a clean close removes the autosave
+    assert not autosave_path().exists()
+
+    # answering No: nothing comes back and the autosave and queue are gone
+    w3 = window(WORK / "as_out")
+    w3.autosave()
+    assert not autosave_path().exists()
+    w3._route([str(clip)])
+    pump(15, lambda: w3.clips.entries)
+    w3.autosave()
+    w3.autosave_timer.stop()
+    w3.hide()
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No))
+    w4 = window(WORK / "as_out")
+    pump(2)
+    assert not w4.clips.entries and not autosave_path().exists() and load_queue() == []
+    w4.close()
+
+
+def test_delete_originals_from_clips_and_replay_merge(monkeypatch):
+    (WORK / "del_src").mkdir()
+    a = fx.single_clip(WORK / "del_src")
+    b = WORK / "del_src" / "b.mp4"
+    shutil.copy(a, b)
+    with open(b, "ab") as f:
+        f.write(b"\0" * 64)
+    rep = WORK / "del_rep"
+    fx.shared_replays(rep)
+    w = window(WORK / "del_out")
+    w.settings.permanent_delete = True               # no Recycle Bin on the test machine
+    w.queue.auto_start.setChecked(False)
+    w._route([str(a), str(b)])
+    pump(15, lambda: len(w.clips.entries) == 2)
+    c = w.clips
+
+    # No: nothing happens
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.No))
+    c.table.selectRow(0)
+    c.delete_selected()
+    assert len(c.entries) == 2 and a.exists()
+
+    # a file a waiting job needs is left alone
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    shown = []
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **k: shown.append(a[2])))
+    w.queue.add_jobs(w.clips.build_jobs([e for e in c.entries if e.path == a]), start=False)
+    c.table.selectAll()
+    c.delete_selected()
+    assert len(shown) == 1 and a.name in shown[0]
+    assert a.exists() and not b.exists()
+    assert [e.path for e in c.entries] == [a]
+
+    # Replay merge: a clip row goes, the rest are grouped again
+    w.tabs.setCurrentWidget(w.merge)
+    w._route([str(rep)])
+    pump(30, lambda: w.merge.sessions)
+    m = w.merge
+    n = len(m.paths)
+    first = m.sessions[0].clips[0]
+    m.open_clip(first)
+    _select_rows(m.tree, [(0, 0)])
+    m.delete_selected()
+    assert not first.path.exists() and not m.viewers
+    pump(30, lambda: len(m.paths) == n - 1 and sum(len(s.clips) for s in m.sessions) == n - 1)
+    assert str(first.path) not in {str(p) for p in m.paths}
+    w.close()

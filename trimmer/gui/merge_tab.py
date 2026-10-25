@@ -228,6 +228,8 @@ class MergeTab(QWidget):
         self.tree.itemDelegate().closeEditor.connect(lambda *_: self._refresh_default_names())
         sc = QShortcut(QKeySequence("F2"), self.tree)
         sc.activated.connect(lambda: self._edit_name(self.tree.currentItem()))
+        sc = QShortcut(QKeySequence("Shift+Delete"), self.tree)
+        sc.activated.connect(lambda: self.delete_selected())
         self.tree.header().setHighlightSections(False)
         self.tree.itemSelectionChanged.connect(self._sel)
         split.addWidget(self.tree)
@@ -528,7 +530,7 @@ class MergeTab(QWidget):
 
     def _show(self, sessions, skipped, notes):
         # Ticks, names, own options and the selection carry over to the sessions found again
-        self._saved = self.snapshot()["sessions"] + [d for d in self._saved if not d.get("used")]
+        self._saved = self.snapshot()["sessions"]
         self.sessions = sessions
         self.used, self.custom = {}, {}
         # No selection or tick signals while the rows are rebuilt: the list has fewer rows than sessions
@@ -589,6 +591,8 @@ class MergeTab(QWidget):
             if id(s) in self.custom:
                 d["opts"] = copy_opts(self.custom[id(s)])
             sessions.append(d)
+        # Saved state not given to a session yet (detection is still running)
+        sessions += [{k: v for k, v in d.items() if k != "used"} for d in self._saved if not d.get("used")]
         return {"paths": [str(p) for p in self.paths], "sessions": sessions, "shared": copy_opts(self.shared)}
 
     def restore(self, data: dict) -> list:
@@ -925,6 +929,10 @@ class MergeTab(QWidget):
         if multi:
             m.addAction(f"Merge {len(multi)} session{'s' if len(multi) != 1 else ''}, then send to Clips",
                         lambda: self.merge_then_send())
+        m.addSeparator()
+        what = f"{len(clips)} clip{'s' if len(clips) != 1 else ''}"
+        m.addAction((f"Delete {what} permanently…" if self.main.settings.permanent_delete
+                     else f"Move {what} to the Recycle Bin…") + "\tShift+Del", lambda: self.delete_selected())
         m.exec(self.tree.viewport().mapToGlobal(pos))
 
     def _take(self, paths):
@@ -946,6 +954,20 @@ class MergeTab(QWidget):
         paths = [c.path for c in clips]
         self._take(paths)
         self.main.send_to_clips(paths)
+
+    def delete_selected(self, clips=None):
+        """Move clips (default: the selection) to the Recycle Bin (or delete them, as Settings say) and
+        take them out of Replay merge."""
+        if clips is None:
+            clips = self._selection()[0]
+        if not clips:
+            return
+        doomed = {str(c.path) for c in clips}
+        for d in [d for d in self.viewers if str(d.clip.path) in doomed]:
+            d.close()                   # an open viewer holds the file
+        gone = self.main.delete_originals([c.path for c in clips], self)
+        if gone:
+            self._take(gone)
 
     def merge_then_send(self, sessions=None):
         """Merge each multi-clip session (default: those in the selection) with a plain lossless merge,

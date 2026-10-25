@@ -63,6 +63,10 @@ Drop in one clip or hundreds, either as files or whole folders. For each clip yo
 - **Pick the track you hear** in the preview. Right-click a track to make it
   the default for every clip you open until you close Trimmer.
 - **Estimate** the output size before you start.
+- **Get rid of a clip you don't want**: right-click it and choose **Move to
+  the Recycle Bin** (or press Shift+Delete). The file goes to the Recycle Bin,
+  or is deleted outright if Settings say so, and leaves the list. Trimmer asks
+  first, and leaves alone any file a waiting job still needs.
 
 The output options apply to every clip, unless a clip has its own: select one
 or more clips and change an option, and only those clips change. They get a
@@ -98,7 +102,8 @@ the way the real merge would be (nothing is saved). Right-click a session or
 some clips (Ctrl or Shift-click to select several) to **send them to the Clips
 tab**, each as its own clip, or, for a multi-clip session, to **merge it first**
 (a plain lossless merge) so it arrives in Clips as one clip. Either way the
-clips leave Replay merge. Each session can then be:
+clips leave Replay merge. The same menu (or Shift+Delete) moves unwanted
+replays to the Recycle Bin and takes them out of the list. Each session can then be:
 
 - **merged into one video**, or
 - **kept as separate clips** with the repeated footage removed.
@@ -152,6 +157,11 @@ Jobs run one at a time, top to bottom.
 
 A cancelled job never leaves a half-written file. If Trimmer closes or
 crashes, unfinished jobs are offered again the next time it starts.
+
+**Crash recovery:** while Trimmer is open it saves what's in the Clips tab and
+Replay merge every 10 seconds (each clip's kept parts, names and options, the
+sessions' ticks and names). If Trimmer or the PC crashes, the next start
+offers to bring all of it back, along with the jobs that were waiting.
 
 **Save state:** when you close Trimmer with clips in the Clips tab, replays in
 Replay merge or jobs left in the queue, it asks whether to save them. Saved,

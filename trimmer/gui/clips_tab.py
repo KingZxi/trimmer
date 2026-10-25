@@ -6,7 +6,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFrame,
-                               QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMessageBox,
+                               QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMenu, QMessageBox,
                                QPushButton, QScrollArea, QSplitter, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
@@ -130,6 +130,8 @@ class ClipsTab(QWidget):
         for c, w in enumerate((200, 58, 70, 130, 120, 96)):
             self.table.setColumnWidth(c, w)
         self.table.itemSelectionChanged.connect(self._selection_changed)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._menu)
         ll.addWidget(self.table, 1)
         b_add = set_kind(QPushButton("Add files…"), "ghost")
         b_add.clicked.connect(self.main.add_files_dialog)
@@ -316,7 +318,7 @@ class ClipsTab(QWidget):
         for key, fn in (("I", self.mark_in), ("O", self.mark_out), ("Space", self.toggle_play),
                         ("Left", lambda: self.step(-1)), ("Right", lambda: self.step(1)),
                         ("J", lambda: self.jump(-5)), ("L", lambda: self.jump(5)),
-                        ("Delete", self.remove_selected),
+                        ("Delete", self.remove_selected), ("Shift+Delete", lambda: self.delete_selected()),
                         ("F2", lambda: (self.out_name.setFocus(), self.out_name.end(False)))):
             sc = QShortcut(QKeySequence(key), self)
             sc.setContext(Qt.WidgetWithChildrenShortcut)
@@ -419,6 +421,8 @@ class ClipsTab(QWidget):
             if e.opts is not None:
                 d["opts"] = copy_opts(e.opts)
             entries.append(d)
+        # Clips from a restore that are still loading
+        entries += [dict(d) for d in self._restore.values()]
         return {"entries": entries, "selected": [str(e.path) for e in self.selected_entries()],
                 "shared": copy_opts(self.shared)}
 
@@ -484,13 +488,42 @@ class ClipsTab(QWidget):
         return [self.entries[r] for r in rows if r < len(self.entries)]
 
     def remove_selected(self):
-        rows = sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True)
-        for r in rows:
-            e = self.entries.pop(r)
+        self._drop(self.selected_entries())
+
+    def _drop(self, entries):
+        """Take these clips out of the list."""
+        for e in entries:
+            r = self.entries.index(e)
+            self.entries.pop(r)
             self.fingerprints = {k: v for k, v in self.fingerprints.items() if v is not e}
             self.table.removeRow(r)
             if e is self.current:
                 self._load(None)
+
+    def delete_selected(self, entries=None):
+        """Move the selected clips' files to the Recycle Bin (or delete them, as Settings say) and take
+        them out of the list."""
+        entries = self.selected_entries() if entries is None else entries
+        if not entries:
+            return
+        if self.current in entries:
+            self._load(None)            # the preview lets go of the file first
+        gone = {str(p) for p in self.main.delete_originals([e.path for e in entries], self)}
+        self._drop([e for e in entries if str(e.path) in gone])
+
+    def _menu(self, pos):
+        r = self.table.rowAt(pos.y())
+        if r < 0:
+            return
+        if not self.table.item(r, 0).isSelected():
+            self.table.selectRow(r)
+        n = len(self.selected_entries())
+        what = f"{n} clip{'s' if n != 1 else ''}"
+        m = QMenu(self)
+        m.addAction(f"Remove {what} from the list", self.remove_selected)
+        m.addAction((f"Delete {what} permanently…" if self.main.settings.permanent_delete
+                     else f"Move {what} to the Recycle Bin…") + "\tShift+Del", lambda: self.delete_selected())
+        m.exec(self.table.viewport().mapToGlobal(pos))
 
     def clear(self):
         self.entries.clear()
