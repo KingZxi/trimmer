@@ -328,6 +328,18 @@ def test_clip_viewer_highlight_and_marker():
     d2 = [x for x in m.findChildren(PreviewDialog) if getattr(x, "clip", None) is s.clips[2]][-1]
     assert d2.timeline.segments == [] and "None of this clip is used" in d2.used_note.text()
     d2.close()
+
+    # Esc closes a dialog without a closeEvent; the viewer must still be let go,
+    # or the next highlight update writes to its deleted timeline.
+    from PySide6.QtTest import QTest
+    m.open_clip(second)
+    pump(1)
+    QTest.keyClick(m.viewers[-1], Qt.Key_Escape)
+    pump(1)
+    assert not m.viewers and m.view.marker is None
+    m.used.clear()
+    m._ensure_used(s)
+    pump(30, lambda: m.used.get(id(s), ({}, "quick"))[1] == "exact")
     w.close()
 
 

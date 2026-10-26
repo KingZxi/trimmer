@@ -159,7 +159,12 @@ class PreviewDialog(QDialog):
     def jump(self, seconds):
         self.player.setPosition(max(0, int(self.player.position() + seconds * 1000)))
 
-    def closeEvent(self, e):
+    def _shut(self):
+        """Stop and let go, once. Esc closes a dialog through done(), which deletes
+        it without a closeEvent, so both paths come here: otherwise Replay merge
+        keeps the dead viewer and later updates hit its deleted timeline."""
+        if not self._open:
+            return
         self._open = False
         self.closed.emit()
         self.player.stop()
@@ -167,4 +172,11 @@ class PreviewDialog(QDialog):
         if self.temp_dir:
             d = self.temp_dir
             QTimer.singleShot(500, lambda: shutil.rmtree(d, ignore_errors=True))
+
+    def done(self, result):
+        self._shut()
+        super().done(result)
+
+    def closeEvent(self, e):
+        self._shut()
         super().closeEvent(e)
