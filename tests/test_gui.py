@@ -1251,3 +1251,19 @@ def test_queue_closes_the_preview_before_deleting_an_original(monkeypatch):
     assert released == [clip] and c.current is None and not clip.exists()
     w.settings.on_close = "discard"
     w.close()
+
+
+def test_default_track_with_tracks_of_the_same_name():
+    from trimmer.gui.widgets import TrackPicker
+    prefs = {}
+    t = TrackPicker(prefs)
+    t.set_tracks(["1: Audio", "2: Audio", "3: Audio"], ["Audio", "Audio", "Audio"])
+    t.set_default(2)
+    assert t.currentIndex() == 2 and "default" in t.itemText(2) and "default" not in t.itemText(0)
+    other = TrackPicker(prefs)                 # the next clip opened
+    other.set_tracks(["1: Audio", "2: Audio", "3: Audio"], ["Audio", "Audio", "Audio"])
+    assert other.currentIndex() == 2
+    other.set_tracks(["1: Mic", "2: Game", "3: Audio"], ["Mic", "Game", "Audio"])
+    assert other.currentIndex() == 2           # a unique name still wins
+    other.set_tracks(["1: Audio", "2: Mic"], ["Audio", "Mic"])
+    assert other.currentIndex() == 0           # position 3 isn't there: the track with the name

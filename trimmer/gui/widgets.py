@@ -616,12 +616,14 @@ class TrackPicker(QComboBox):
             self.track_chosen.emit(self.currentIndex())
 
     def preferred(self) -> int:
-        """The default track: same name if this clip has it, else same position."""
+        """The default track: same name if this clip has it, else same position.
+        When several tracks share that name, the one at the same position wins."""
         if not self.labels:
             return -1
         title, index = self.prefs.get("title"), self.prefs.get("index")
-        if title and title in self.titles:
-            return self.titles.index(title)
+        same = [i for i, t in enumerate(self.titles) if title and t == title]
+        if same:
+            return index if index in same else same[0]
         if index is not None and 0 <= index < len(self.labels):
             return index
         return 0
