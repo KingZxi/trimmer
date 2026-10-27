@@ -163,6 +163,11 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentWidget(self.clips)
         self.clips.add_paths([Path(p) for p in paths])
 
+    def release_files(self, paths):
+        """Close every preview of these files so they can be deleted."""
+        self.clips.release(paths)
+        self.merge.release(paths)
+
     def delete_originals(self, paths, parent=None) -> list:
         """Move files to the Recycle Bin (or delete them, as Settings say) after asking. Files a waiting or
         running job still needs are left alone. Returns the paths that are really gone."""

@@ -15,11 +15,12 @@ from ..core import peek
 from ..core.encode import EncodeSettings, predict_size, resolve_quality
 from ..core.jobs import ClipJob, JobOptions
 from ..core.render import AUDIO_RIP_FORMATS
-from ..core.util import format_hms, format_hms_ms, format_size, sanitize_filename
+from ..core.util import format_hms, format_hms_ms, format_size, same_file, sanitize_filename
 from .queue_checks import check_new_jobs
 from .theme import set_kind
-from .widgets import (OWN_TIP, STAR, EncodeForm, HintTable, OptionBinding, Timeline, TrackPicker, card, clean_opts,
-                      clearable, copy_opts, hbox, label)
+from .widgets import (OWN_TIP, STAR, EncodeForm, FullScreen, HintTable, OptionBinding, Timeline, TrackPicker, card,
+                      clean_opts,
+                      clearable, copy_opts, hbox, label, show_in_folder)
 
 try:        # Windows Smart App Control can block Qt's multimedia DLLs
     from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -52,6 +53,7 @@ class ClipEntry:
         self.snap_marks = []          # keyframes the cuts would snap back to
         self.out_name = ""          # user's name for the outputs; "" = from the original
         self.opts = None            # its own options, or None for the shared ones
+        self.part = None            # (k, n) once split off a clip with n kept parts
 
 
 def quick_fingerprint(path: Path) -> str:
@@ -93,7 +95,7 @@ class ClipsTab(QWidget):
         self.fingerprints = {}
         self.current = None
         self.tasks = []
-        self._restore = {}            # path -> saved edit state, applied as the clips finish loading
+        self._restore = {}            # path -> [saved edit state], applied as the clips finish loading
         self._restore_select = []
         self.shared = copy_opts(DEFAULT_OPTS)   # options of every clip without its own
         self._build()
@@ -153,6 +155,13 @@ class ClipsTab(QWidget):
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(10)
 
+        # Video, timeline and controls sit together so they can go full screen as one.
+        self.stage = QWidget()
+        stage = QVBoxLayout(self.stage)
+        stage.setContentsMargins(0, 0, 0, 0)
+        stage.setSpacing(10)
+        rl.addWidget(self.stage, 4)
+
         pv, pvl = card(margins=(0, 0, 0, 0), spacing=0)
         pv.setObjectName("video")
         self.video = QVideoWidget()
@@ -166,11 +175,11 @@ class ClipsTab(QWidget):
         self.player.durationChanged.connect(lambda d: self.timeline.set_state(duration=d / 1000))
         self.player.tracksChanged.connect(self._tracks_changed)
         pvl.addWidget(self.video)
-        rl.addWidget(pv, 4)
+        stage.addWidget(pv, 1)
 
         self.timeline = Timeline()
         self.timeline.seek.connect(lambda t: self.player.setPosition(int(t * 1000)))
-        rl.addWidget(self.timeline)
+        stage.addWidget(self.timeline)
 
         self.b_play = QPushButton("Play")
         self.b_play.setMinimumWidth(76)
@@ -191,8 +200,11 @@ class ClipsTab(QWidget):
         b_out = QPushButton("Mark out")
         b_out.setToolTip("End the kept part here  (O)")
         b_out.clicked.connect(self.mark_out)
-        rl.addWidget(hbox(self.b_play, b_back, b_fwd, self.time_label, "stretch",
-                          hear, self.preview_track, b_in, b_out, stretch_end=False))
+        b_full = QPushButton("Full screen")
+        b_full.setToolTip("Full screen  (F11 or double-click the video; Esc to leave)")
+        b_full.clicked.connect(lambda: self.full.toggle())
+        stage.addWidget(hbox(self.b_play, b_back, b_fwd, self.time_label, "stretch",
+                             hear, self.preview_track, b_in, b_out, b_full, stretch_end=False))
         if not HAVE_PLAYBACK:       # still-frame preview has no sound
             hear.hide()
             self.preview_track.hide()
@@ -202,7 +214,13 @@ class ClipsTab(QWidget):
         b_seg_rm.clicked.connect(self.remove_segment)
         b_seg_clear = set_kind(QPushButton("Keep whole clip"), "ghost")
         b_seg_clear.clicked.connect(self.clear_segments)
-        partsl.addWidget(hbox(label("Kept parts", "h2"), "stretch", b_seg_rm, b_seg_clear, stretch_end=False))
+        self.b_seg_split = set_kind(QPushButton("Save parts separately"), "ghost")
+        self.b_seg_split.setToolTip("Split the parts into separate clips in the list, each saved as its own file "
+                                    "with its own name and options. Without this, the parts are joined into one video.")
+        self.b_seg_split.clicked.connect(lambda: self.split_parts())
+        self.b_seg_split.setEnabled(False)
+        partsl.addWidget(hbox(label("Kept parts", "h2"), "stretch", self.b_seg_split, b_seg_rm, b_seg_clear,
+                              stretch_end=False))
         self.seg_list = QListWidget()
         self.seg_list.setFrameShape(QFrame.NoFrame)
         self.seg_list.setMaximumHeight(64)
@@ -315,11 +333,14 @@ class ClipsTab(QWidget):
         split.setStretchFactor(1, 5)
         split.setSizes([540, 700])
 
-        for key, fn in (("I", self.mark_in), ("O", self.mark_out), ("Space", self.toggle_play),
-                        ("Left", lambda: self.step(-1)), ("Right", lambda: self.step(1)),
-                        ("J", lambda: self.jump(-5)), ("L", lambda: self.jump(5)),
-                        ("Delete", self.remove_selected), ("Shift+Delete", lambda: self.delete_selected()),
-                        ("F2", lambda: (self.out_name.setFocus(), self.out_name.end(False)))):
+        player_keys = (("I", self.mark_in), ("O", self.mark_out), ("Space", self.toggle_play),
+                       ("Left", lambda: self.step(-1)), ("Right", lambda: self.step(1)),
+                       ("J", lambda: self.jump(-5)), ("L", lambda: self.jump(5)))
+        self.full = FullScreen(self.stage, self.video, player_keys, "Trimmer: Clips preview", parent=self)
+        for key, fn in player_keys + (
+                ("Delete", self.remove_selected), ("Shift+Delete", lambda: self.delete_selected()),
+                ("F2", lambda: (self.out_name.setFocus(), self.out_name.end(False))),
+                ("F11", lambda: self.full.toggle())):
             sc = QShortcut(QKeySequence(key), self)
             sc.setContext(Qt.WidgetWithChildrenShortcut)
             sc.activated.connect(fn)
@@ -393,9 +414,15 @@ class ClipsTab(QWidget):
                 long_paths += 1
             self.fingerprints[fp] = e
             self.entries.append(e)
-            self._apply_saved(e)
+            more = self._apply_saved(e)
             self._add_row(e)
             added += 1
+            for _ in range(more):           # the file's other split parts
+                x = ClipEntry(p, info)
+                x.note = e.note
+                self.entries.append(x)
+                self._apply_saved(x)
+                self._add_row(x)
         msg = f"Added {added} clip(s)."
         if dups:
             msg += f" Skipped {dups} duplicate(s) already in the list."
@@ -420,9 +447,11 @@ class ClipsTab(QWidget):
             d = {"path": str(e.path), "segments": [list(s) for s in e.segments], "out_name": e.out_name}
             if e.opts is not None:
                 d["opts"] = copy_opts(e.opts)
+            if e.part:
+                d["part"] = list(e.part)
             entries.append(d)
         # Clips from a restore that are still loading
-        entries += [dict(d) for d in self._restore.values()]
+        entries += [dict(d) for ds in self._restore.values() for d in ds]
         return {"entries": entries, "selected": [str(e.path) for e in self.selected_entries()],
                 "shared": copy_opts(self.shared)}
 
@@ -434,8 +463,9 @@ class ClipsTab(QWidget):
             if not isinstance(d, dict) or not isinstance(d.get("path"), str):
                 continue
             if Path(d["path"]).exists():
-                found.append(Path(d["path"]))
-                self._restore[d["path"]] = d
+                if d["path"] not in self._restore:      # split parts share one file
+                    found.append(Path(d["path"]))
+                self._restore.setdefault(d["path"], []).append(d)
             else:
                 missing.append(d["path"])
         if isinstance(data.get("shared"), dict):
@@ -448,9 +478,18 @@ class ClipsTab(QWidget):
         return missing
 
     def _apply_saved(self, e: ClipEntry):
-        d = self._restore.pop(str(e.path), None)
-        if not d:
-            return
+        """Give e the first saved state for its file. Returns how many more
+        (split parts of the same file) are still waiting."""
+        ds = self._restore.get(str(e.path))
+        if not ds:
+            return 0
+        d = ds.pop(0)
+        if not ds:
+            del self._restore[str(e.path)]
+        self._apply_state(e, d)
+        return len(ds)
+
+    def _apply_state(self, e: ClipEntry, d: dict):
         try:
             e.segments = [(float(a), None if b is None else float(b)) for a, b in d.get("segments", [])]
         except (TypeError, ValueError):
@@ -459,6 +498,9 @@ class ClipsTab(QWidget):
             e.out_name = sanitize_filename(d["out_name"]) if d["out_name"] else ""
         if isinstance(d.get("opts"), dict):
             e.opts = clean_opts(d["opts"], self.shared)
+        part = d.get("part")
+        if isinstance(part, list) and len(part) == 2 and all(isinstance(x, int) for x in part):
+            e.part = tuple(part)
 
     def _add_row(self, e: ClipEntry):
         r = self.table.rowCount()
@@ -469,7 +511,9 @@ class ClipsTab(QWidget):
         i = e.info
         tracks = ", ".join(a.label for a in i.audio) or "none"
         trim = "whole" if not e.segments else f"{len(e.segments)} part(s), {format_hms(self._kept(e))}"
-        vals = [(STAR if e.opts is not None else "") + e.path.name + (f"  →  {e.out_name}" if e.out_name else ""),
+        part = f"  ·  part {e.part[0]} of {e.part[1]}" if e.part else ""
+        vals = [(STAR if e.opts is not None else "") + e.path.name + part
+                + (f"  →  {e.out_name}" if e.out_name else ""),
                 format_hms(i.duration), format_size(i.size),
                 f"{i.resolution} {i.fps:.0f}fps {i.video_codec}" if i.has_video else "audio only",
                 f"{len(i.audio)}: {tracks}", trim,
@@ -506,10 +550,18 @@ class ClipsTab(QWidget):
         for e in entries:
             r = self.entries.index(e)
             self.entries.pop(r)
-            self.fingerprints = {k: v for k, v in self.fingerprints.items() if v is not e}
+            # Another split part of the same file now stands for it.
+            sib = next((x for x in self.entries if x.path == e.path), None)
+            self.fingerprints = {k: (sib if v is e else v) for k, v in self.fingerprints.items()
+                                 if v is not e or sib is not None}
             self.table.removeRow(r)
             if e is self.current:
                 self._load(None)
+
+    def release(self, paths):
+        """Stop previewing a file that is about to be deleted."""
+        if self.current is not None and any(same_file(self.current.path, p) for p in paths):
+            self._load(None)
 
     def delete_selected(self, entries=None):
         """Move the selected clips' files to the Recycle Bin (or delete them, as Settings say) and take
@@ -531,10 +583,44 @@ class ClipsTab(QWidget):
         n = len(self.selected_entries())
         what = f"{n} clip{'s' if n != 1 else ''}"
         m = QMenu(self)
+        first = self.selected_entries()[0]
+        m.addAction("Show original in folder", lambda: show_in_folder(self, first.path))
+        if n == 1 and len(first.segments) > 1:
+            m.addAction(f"Split {len(first.segments)} parts into separate clips", lambda: self.split_parts(first))
+        m.addSeparator()
         m.addAction(f"Remove {what} from the list", self.remove_selected)
         m.addAction((f"Delete {what} permanently…" if self.main.settings.permanent_delete
                      else f"Move {what} to the Recycle Bin…") + "\tShift+Del", lambda: self.delete_selected())
         m.exec(self.table.viewport().mapToGlobal(pos))
+
+    def split_parts(self, e=None):
+        """Turn a clip with several kept parts into one clip per part, each saved
+        as its own file with its own name and options (starting from e's)."""
+        e = e or self.current
+        if e is None or len(e.segments) < 2:
+            return
+        r = self.entries.index(e)
+        n = len(e.segments)
+        parts = []
+        for k, seg in enumerate(e.segments, 1):
+            x = ClipEntry(e.path, e.info)
+            x.segments = [seg]
+            x.note = e.note
+            x.opts = copy_opts(e.opts) if e.opts is not None else None
+            x.out_name = f"{e.out_name} (part {k})" if e.out_name else ""
+            x.part = (k, n)
+            parts.append(x)
+        if e is self.current:
+            self._load(None)
+        self.entries[r:r + 1] = parts
+        self.fingerprints = {k: (parts[0] if v is e else v) for k, v in self.fingerprints.items()}
+        self.table.removeRow(r)
+        for i, x in enumerate(parts):
+            self.table.insertRow(r + i)
+            self._fill_row(r + i, x)
+        self.table.selectRow(r)
+        self.status.emit(f"Split into {n} clips: each part is now saved as its own file, with its own name "
+                         f"and options.")
 
     def clear(self):
         self.entries.clear()
@@ -672,6 +758,7 @@ class ClipsTab(QWidget):
             self.timeline.set_state(duration=0, position=0, segments=[], pending_in=None, snaps=[])
             self.timeline.set_peek([], [])
             self.seg_list.clear()
+            self.b_seg_split.setEnabled(False)
             self.trim_info.setText("Select one clip to preview and trim it." if self.entries else "")
             return
         self.player.setSource(QUrl.fromLocalFile(str(e.path.resolve())))
@@ -775,6 +862,7 @@ class ClipsTab(QWidget):
     def _refresh_segments(self):
         e = self.current
         self.seg_list.clear()
+        self.b_seg_split.setEnabled(bool(e) and len(e.segments) > 1)
         if not e:
             return
         for a, b in e.segments:

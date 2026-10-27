@@ -228,6 +228,8 @@ class JobContext:
         self.cancel = cancel or CancelToken()
         # True for an original a later job in the queue still reads: its delete waits.
         self.still_needed = still_needed or (lambda p: False)
+        # Asks whoever runs the job to let go of these files (close previews) before they're deleted.
+        self.release: Callable[[List[Path]], None] = lambda paths: None
         self.skipped: List[str] = []      # outputs skipped by the name-clash policy
         self._sticky = None
 
@@ -711,6 +713,7 @@ def _keep_note(ctx, res: JobResult, sources: List[Path]):
 
 def _delete_sources(job, sources: List[Path], outputs: List[Path], ctx, res: JobResult):
     out_set = {str(Path(o).resolve()) for o in outputs}
+    doomed = []
     for s in sources:
         if str(Path(s).resolve()) in out_set:
             continue
@@ -719,6 +722,10 @@ def _delete_sources(job, sources: List[Path], outputs: List[Path], ctx, res: Job
             ctx.log(f"Original {Path(s).name} kept for now: a later job in the queue still uses it. "
                     f"It is removed once those jobs have saved their outputs.")
             continue
+        doomed.append(Path(s))
+    if doomed:
+        ctx.release(doomed)
+    for s in doomed:
         try:
             size = Path(s).stat().st_size
             what = recycle_or_delete(s, permanent=job.options.permanent_delete)

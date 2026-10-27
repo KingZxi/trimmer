@@ -5,12 +5,12 @@ import shutil
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QDialog, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QPushButton, QVBoxLayout, QWidget
 
 from ..core import peek
 from ..core.util import format_hms_ms
 from .theme import set_kind
-from .widgets import Timeline, TrackPicker, card, hbox, label
+from .widgets import FullScreen, Timeline, TrackPicker, card, hbox, label
 from .worker import Task
 
 try:        # same fallback as the Clips tab when Qt's multimedia DLLs are blocked
@@ -47,12 +47,18 @@ class PreviewDialog(QDialog):
         if note:
             lay.addWidget(label(note, "muted", wrap=True))
 
+        # Video, timeline and controls sit together so they can go full screen as one.
+        self.stage = QWidget()
+        stage = QVBoxLayout(self.stage)
+        stage.setContentsMargins(0, 0, 0, 0)
+        stage.setSpacing(10)
+        lay.addWidget(self.stage, 1)
         pv, pvl = card(margins=(0, 0, 0, 0), spacing=0)
         pv.setObjectName("video")
         self.video = QVideoWidget()
         self.video.setMinimumHeight(300)
         pvl.addWidget(self.video)
-        lay.addWidget(pv, 1)
+        stage.addWidget(pv, 1)
         self.player = QMediaPlayer(self)
         if QAudioOutput is not None:
             self.audio_out = QAudioOutput(self)
@@ -62,10 +68,10 @@ class PreviewDialog(QDialog):
         self.timeline = Timeline()
         self.timeline.setToolTip("Click or drag to seek. Dashed lines mark where clips join.")
         self.timeline.seek.connect(lambda t: self.player.setPosition(int(t * 1000)))
-        lay.addWidget(self.timeline)
+        stage.addWidget(self.timeline)
         self.used_note = label("", "muted", wrap=True)
         self.used_note.hide()
-        lay.addWidget(self.used_note)
+        stage.addWidget(self.used_note)
 
         self.b_play = QPushButton("Play")
         self.b_play.setMinimumWidth(76)
@@ -78,10 +84,13 @@ class PreviewDialog(QDialog):
         self.tracks = TrackPicker(main.track_prefs)
         self.tracks.track_chosen.connect(self.player.setActiveAudioTrack)
         hear = label("Hear", "muted")
+        b_full = QPushButton("Full screen")
+        b_full.setToolTip("Full screen  (F11 or double-click the video; Esc to leave)")
+        b_full.clicked.connect(lambda: self.full.toggle())
         b_close = QPushButton("Close")
         b_close.clicked.connect(self.close)
-        lay.addWidget(hbox(self.b_play, b_back, b_fwd, self.time_label, "stretch", hear, self.tracks, b_close,
-                           stretch_end=False))
+        stage.addWidget(hbox(self.b_play, b_back, b_fwd, self.time_label, "stretch", hear, self.tracks, b_full,
+                             b_close, stretch_end=False))
         if not HAVE_PLAYBACK:
             hear.hide()
             self.tracks.hide()
@@ -89,9 +98,10 @@ class PreviewDialog(QDialog):
         self.player.positionChanged.connect(self._pos)
         self.player.durationChanged.connect(self._dur)
         self.player.tracksChanged.connect(self._tracks_changed)
-        for key, fn in (("Space", self.toggle_play), ("Left", lambda: self.step(-1)),
-                        ("Right", lambda: self.step(1)), ("J", lambda: self.jump(-5)),
-                        ("L", lambda: self.jump(5))):
+        keys = (("Space", self.toggle_play), ("Left", lambda: self.step(-1)),
+                ("Right", lambda: self.step(1)), ("J", lambda: self.jump(-5)), ("L", lambda: self.jump(5)))
+        self.full = FullScreen(self.stage, self.video, keys, title, parent=self)
+        for key, fn in keys + (("F11", lambda: self.full.toggle()),):
             QShortcut(QKeySequence(key), self, activated=fn)
         self.player.setSource(QUrl.fromLocalFile(str(path)))
         if info is not None:
@@ -166,6 +176,7 @@ class PreviewDialog(QDialog):
         if not self._open:
             return
         self._open = False
+        self.full.leave()
         self.closed.emit()
         self.player.stop()
         self.player.setSource(QUrl())       # release the file before deleting it

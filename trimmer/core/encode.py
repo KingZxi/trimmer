@@ -90,6 +90,10 @@ class EncodeSettings:
                 self.audio = str(int(self.audio))
             except (TypeError, ValueError):
                 self.audio = "copy"
+        try:
+            self.auto3_target = min(99.0, max(80.0, float(self.auto3_target)))
+        except (TypeError, ValueError):
+            self.auto3_target = 93.0
         return self
 
     @property
@@ -265,8 +269,11 @@ def pick_sample_windows(duration, count: int = 3, length: float = 2.5) -> List[T
             for f in [(i + 1) / (count + 1) for i in range(count)]]
 
 
-def build_reference(src: Path, duration: float, tmp: Path, cancel=None) -> Tuple[Path, float]:
-    """Join the sample windows into one lossless reference clip.
+def build_reference(src: Path, duration: float, tmp: Path, cancel=None,
+                    filters: List[str] = ()) -> Tuple[Path, float]:
+    """Join the sample windows into one lossless reference clip, with
+    `filters` (the encode's own scaling / frame rate cap) applied, so trials
+    are measured at the size and rate the real encode makes.
     Returns (path, total seconds)."""
     windows = pick_sample_windows(duration)
     args = []
@@ -274,7 +281,8 @@ def build_reference(src: Path, duration: float, tmp: Path, cancel=None) -> Tuple
         if start > 0:
             args += ["-ss", f"{start:.3f}"]
         args += ["-t", f"{length:.3f}", "-i", str(src)]
-    graph = "".join(f"[{i}:v:0]" for i in range(len(windows))) + f"concat=n={len(windows)}:v=1:a=0[v]"
+    graph = "".join(f"[{i}:v:0]" for i in range(len(windows))) + f"concat=n={len(windows)}:v=1:a=0"
+    graph += "".join(f",{f}" for f in filters) + "[v]"
     ref = tmp / "ref.mkv"
     ff.run_checked(args + ["-filter_complex", graph, "-map", "[v]", "-c:v", "libx264", "-qp", "0",
                            "-preset", "ultrafast", "-an", "-loglevel", "error", "-y", str(ref)], cancel=cancel)
@@ -302,7 +310,7 @@ def estimate_crf_heuristic(src: Path, info: MediaInfo, settings: EncodeSettings,
     CRF30 ratio). Calibrated on synthetic clips only (handoff 7.4)."""
     with tempfile.TemporaryDirectory(prefix="trimmer_auto2_") as td:
         tmp = Path(td)
-        ref, length = build_reference(src, info.duration, tmp, cancel)
+        ref, length = build_reference(src, info.duration, tmp, cancel, video_filters(settings, info))
         fast = ["-c:v", "libx264", "-preset", "ultrafast"]
         hi = _encode_kbps(ref, length, fast + ["-crf", "30"], tmp, "hi.mp4", cancel)
         lo = _encode_kbps(ref, length, fast + ["-crf", "14"], tmp, "lo.mp4", cancel)
@@ -354,6 +362,12 @@ def _quality_score(ref: Path, trial: Path, use_vmaf: bool, tmp: Path, cancel) ->
     return float(m.group(1)) * 100 if m else 0.0
 
 
+def ssim_target(vmaf_target: float) -> float:
+    """The SSIM (x100) used instead of a VMAF target when libvmaf is missing:
+    VMAF 93 -> 97, each VMAF point half an SSIM point."""
+    return min(99.5, max(90.0, 97.0 + (vmaf_target - 93.0) / 2))
+
+
 def estimate_crf_measured(src: Path, info: MediaInfo, settings: EncodeSettings,
                           cancel: CancelToken = None, log=None) -> Tuple[int, str]:
     """auto3: encode a short sample at candidate CRFs with the real encoder
@@ -367,7 +381,7 @@ def estimate_crf_measured(src: Path, info: MediaInfo, settings: EncodeSettings,
     lo_bound, hi_bound = 15 + off, 34 + off
     with tempfile.TemporaryDirectory(prefix="trimmer_auto3_") as td:
         tmp = Path(td)
-        ref, _length = build_reference(src, info.duration, tmp, cancel)
+        ref, _length = build_reference(src, info.duration, tmp, cancel, video_filters(settings, info))
 
         lo, hi = lo_bound, hi_bound
         best = None
@@ -380,7 +394,7 @@ def estimate_crf_measured(src: Path, info: MediaInfo, settings: EncodeSettings,
             vargs = video_codec_args(settings, info, quality=mid, container=".mkv")
             ff.run_checked(["-i", str(ref), "-an"] + vargs + ["-loglevel", "error", "-y", str(trial)],
                            cancel=cancel)
-            target = settings.auto3_target if use_vmaf else 97.0
+            target = settings.auto3_target if use_vmaf else ssim_target(settings.auto3_target)
             try:
                 score = _quality_score(ref, trial, use_vmaf, tmp, cancel)
             except (FFmpegError, OSError, KeyError, ValueError) as e:
@@ -390,7 +404,7 @@ def estimate_crf_measured(src: Path, info: MediaInfo, settings: EncodeSettings,
                 # than crashing the whole batch.
                 log(f"VMAF measurement failed, falling back to SSIM: {str(e)[-300:]}")
                 use_vmaf = False
-                target = 97.0
+                target = ssim_target(settings.auto3_target)
                 score = _quality_score(ref, trial, False, tmp, cancel)
             tried.append(mid)
             if score >= target:
@@ -416,5 +430,6 @@ def resolve_quality(src: Path, info: MediaInfo, settings: EncodeSettings,
         return estimate_crf_heuristic(src, info, settings, cancel), "auto2"
     if settings.quality == "auto3":
         crf, _metric = estimate_crf_measured(src, info, settings, cancel, log)
-        return crf, "auto3"
+        # A target other than the default goes in the name: "CRF21 auto3-95".
+        return crf, "auto3" if settings.auto3_target == 93.0 else f"auto3-{settings.auto3_target:g}"
     return int(settings.quality), None

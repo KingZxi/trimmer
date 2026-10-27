@@ -1,17 +1,51 @@
 """Reusable widgets: the trim timeline, the compression settings form and
 the dark theme."""
 
+import subprocess
+import sys
 from contextlib import contextmanager
+from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QUrl, Signal
+from PySide6.QtGui import (QColor, QDesktopServices, QFont, QIcon, QImage, QKeySequence, QPainter, QPainterPath,
+                           QPen, QShortcut)
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QHBoxLayout,
-                               QLabel, QMenu, QSpinBox, QTableWidget, QToolButton, QTreeWidget, QVBoxLayout, QWidget)
+                               QLabel, QMenu, QMessageBox, QSpinBox, QTableWidget, QToolButton, QTreeWidget,
+                               QVBoxLayout, QWidget)
 
 from ..core.encode import CODECS, ENCODERS, VALID_PRESETS, EncodeSettings
 from ..core.util import format_hms_ms
 
 from .theme import apply_theme, clear_icon_path, colour  # noqa: F401  (re-exported)
+
+
+def reveal(path: Path):
+    """Show a file in Explorer with it selected (or its folder elsewhere)."""
+    path = Path(path)
+    if sys.platform == "win32" and path.exists():
+        subprocess.Popen(["explorer", "/select,", str(path)])
+    else:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent if path.is_file() else path)))
+
+
+def show_in_folder(parent, path) -> bool:
+    """Open the file's folder with the file selected. If it's gone, say so and
+    offer the folder it was in (when that still exists)."""
+    path = Path(path)
+    if path.exists():
+        reveal(path)
+        return True
+    folder = path.parent
+    if folder.is_dir():
+        if QMessageBox.question(parent, "File not found",
+                                f"{path.name} no longer exists. It was moved, renamed or deleted.\n\n"
+                                f"Open the folder it was in?\n{folder}",
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) == QMessageBox.Yes:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+    else:
+        QMessageBox.information(parent, "File not found",
+                                f"{path.name} no longer exists, and neither does its folder:\n{folder}")
+    return False
 
 
 class _Hint:
@@ -142,6 +176,67 @@ def card(layout_cls=QVBoxLayout, margins=(14, 12, 14, 12), spacing=8):
     lay.setContentsMargins(*margins)
     lay.setSpacing(spacing)
     return f, lay
+
+
+class FullScreen(QWidget):
+    """Shows a preview panel (video, timeline and controls) full screen and
+    puts it back. The panel moves into this window, so the panel's own
+    keyboard shortcuts are given again here as `keys` [(key, fn)]. F11, Esc
+    or a double-click on `video` leave; F11 or a double-click also enter."""
+
+    def __init__(self, panel: QWidget, video: QWidget, keys=(), title="Trimmer", parent=None):
+        super().__init__(parent, Qt.Window)        # owned by `parent`, but its own window
+        self.setWindowTitle(title)
+        self.setObjectName("fullscreen")
+        self.panel = panel
+        self.lay = QVBoxLayout(self)
+        self.lay.setContentsMargins(12, 12, 12, 12)
+        self.home = None            # (layout, index, stretch) the panel came from
+        for key, fn in list(keys) + [("F11", self.toggle), ("Esc", self.leave)]:
+            sc = QShortcut(QKeySequence(key), self)
+            sc.activated.connect(fn)
+        self._watch = [video] + video.findChildren(QWidget)
+        for w in self._watch:
+            w.installEventFilter(self)
+
+    @property
+    def active(self) -> bool:
+        return self.home is not None
+
+    def eventFilter(self, obj, e):
+        if e.type() == QEvent.MouseButtonDblClick and e.button() == Qt.LeftButton:
+            self.toggle()
+            return True
+        return False
+
+    def toggle(self):
+        self.leave() if self.active else self.enter()
+
+    def enter(self):
+        parent = self.panel.parentWidget()
+        layout = parent.layout() if parent is not None else None
+        if self.active or layout is None:
+            return
+        i = layout.indexOf(self.panel)
+        self.home = (layout, i, layout.stretch(i) if hasattr(layout, "stretch") else 0)
+        self.lay.addWidget(self.panel)
+        self.showFullScreen()
+        self.activateWindow()
+
+    def leave(self):
+        if not self.active:
+            return
+        layout, i, stretch = self.home
+        self.home = None
+        layout.insertWidget(i, self.panel, stretch)
+        self.hide()
+        w = layout.parentWidget()
+        if w is not None:
+            w.window().activateWindow()
+
+    def closeEvent(self, e):        # Alt+F4 while full screen: back to normal, keep the window
+        self.leave()
+        e.ignore()
 
 
 class ClearButton(QToolButton):
@@ -348,6 +443,8 @@ AUDIO = [("Copy original (no loss)", "copy"), ("AAC 96 kbps", "96"), ("AAC 128 k
          ("AAC 160 kbps", "160"), ("AAC 192 kbps", "192"), ("AAC 256 kbps", "256"), ("AAC 320 kbps", "320")]
 HEIGHTS = [("Keep", 0), ("2160p", 2160), ("1440p", 1440), ("1080p", 1080), ("720p", 720), ("480p", 480)]
 FPS = [("Keep", 0), ("60 fps", 60), ("30 fps", 30)]
+AUTO3_TARGETS = [("95: very hard to tell apart (bigger)", 95.0), ("93: balanced (default)", 93.0),
+                 ("90: smaller, small visible loss", 90.0)]
 
 
 class EncodeForm(QWidget):
@@ -399,6 +496,13 @@ class EncodeForm(QWidget):
         f.addRow("Encoder", self.encoder)
         self.crf_row = f.rowCount()
         f.addRow("CRF / quality", self.crf)
+        self.auto3_target = QComboBox()
+        for label, v in AUTO3_TARGETS:
+            self.auto3_target.addItem(label, v)
+        self.auto3_target.setCurrentIndex(1)
+        self.auto3_target.setToolTip("How close to the original auto3 keeps each clip, as a VMAF score out of 100.\n"
+                                     "It picks the smallest file that still scores at least this.")
+        f.addRow("Quality target", self.auto3_target)
         f.addRow("Target size", self.target)
         f.addRow("Speed preset", self.preset)
         f.addRow("Audio", self.audio)
@@ -407,7 +511,8 @@ class EncodeForm(QWidget):
         f.addRow("Keyframe every", self.gop)
         f.addRow("", self.revert)
         self.form = f
-        for w in (self.mode, self.codec, self.encoder, self.preset, self.audio, self.height_cap, self.fps_cap):
+        for w in (self.mode, self.codec, self.encoder, self.preset, self.audio, self.height_cap, self.fps_cap,
+                  self.auto3_target):
             w.currentIndexChanged.connect(self._update)
         for w in (self.crf, self.target, self.gop):
             w.valueChanged.connect(self._update)
@@ -428,6 +533,7 @@ class EncodeForm(QWidget):
     def _update(self):
         mode = self.mode.currentData()
         self.form.setRowVisible(self.crf, mode == "crf")
+        self.form.setRowVisible(self.auto3_target, mode == "auto3")
         self.form.setRowVisible(self.target, mode == "target_size")
         self.form.setRowVisible(self.revert, mode != "target_size")
         self.encoder.setEnabled(mode != "lossless")
@@ -442,7 +548,7 @@ class EncodeForm(QWidget):
             preset=self.preset.currentText(), target_size_mb=self.target.value(),
             audio=self.audio.currentData(), max_height=self.height_cap.currentData(),
             max_fps=self.fps_cap.currentData(), keyframe_interval=self.gop.value(),
-            revert_if_larger=self.revert.isChecked())
+            auto3_target=self.auto3_target.currentData(), revert_if_larger=self.revert.isChecked())
         return s.validate()
 
     def set_settings(self, s: EncodeSettings):
@@ -458,6 +564,9 @@ class EncodeForm(QWidget):
         self.height_cap.setCurrentIndex(max(0, self.height_cap.findData(s.max_height)))
         self.fps_cap.setCurrentIndex(max(0, self.fps_cap.findData(int(s.max_fps))))
         self.gop.setValue(s.keyframe_interval)
+        # Nearest offered target (a hand-edited settings file may hold another number).
+        near = min(range(len(AUTO3_TARGETS)), key=lambda i: abs(AUTO3_TARGETS[i][1] - s.auto3_target))
+        self.auto3_target.setCurrentIndex(near)
         self.revert.setChecked(s.revert_if_larger)
         self._update()
 

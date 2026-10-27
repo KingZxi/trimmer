@@ -154,7 +154,7 @@ def same_file(a: Path, b: Path) -> bool:
         return False
 
 
-def recycle_or_delete(path: Path, permanent: bool = False) -> str:
+def recycle_or_delete(path: Path, permanent: bool = False, attempts: int = 12, delay: float = 0.5) -> str:
     """Send a file to the Recycle Bin (default) or delete it outright.
 
     Returns a short description of what happened. Raises OSError if neither
@@ -167,9 +167,17 @@ def recycle_or_delete(path: Path, permanent: bool = False) -> str:
         except ImportError:
             raise OSError("send2trash is not installed, so the Recycle Bin can't be used. "
                           "Install it (pip install send2trash) or switch to permanent delete in Settings.")
-        send2trash(str(path))
-        return "moved to Recycle Bin"
-    safe_unlink(path)
+        # A player, a thumbnail look-up or the virus scanner can hold the file
+        # for a moment on Windows; keep trying for a few seconds.
+        for attempt in range(attempts):
+            try:
+                send2trash(str(path))
+                return "moved to Recycle Bin"
+            except OSError:
+                if attempt == attempts - 1 or not path.exists():
+                    raise
+                time.sleep(delay)
+    safe_unlink(path, attempts=attempts, delay=delay)
     return "deleted"
 
 

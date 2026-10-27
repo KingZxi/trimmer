@@ -40,6 +40,7 @@ class QueueRunner(QThread):
     item_log = Signal(str, str)
     item_finished = Signal(str)
     conflict = Signal(str)          # path; GUI answers via answer_conflict()
+    release = Signal(list)          # paths about to be deleted; GUI lets go, then calls released()
     paused_changed = Signal(bool)   # True while held (mid-job or between jobs)
     batch_finished = Signal(str, bool)    # summary text, True if the user stopped it
 
@@ -54,6 +55,7 @@ class QueueRunner(QThread):
         self._go.set()
         self._answer = None
         self._answer_event = threading.Event()
+        self._released = threading.Event()
         # Originals a finished job would have deleted but a later queued job
         # still reads: [{"path", "item", "ok"}]. Removed once no waiting job
         # needs them, and only if every job that used them saved its outputs.
@@ -91,6 +93,16 @@ class QueueRunner(QThread):
         self._answer = answer
         self._answer_event.set()
 
+    def released(self):
+        self._released.set()
+
+    def _release(self, paths):
+        """Have the GUI close previews of files about to be deleted (an open
+        player keeps a file locked on Windows). Never waits long."""
+        self._released.clear()
+        self.release.emit([str(p) for p in paths])
+        self._released.wait(10)
+
     def _ask(self, path: Path) -> str:
         self._answer_event.clear()
         self.conflict.emit(str(path))
@@ -125,6 +137,7 @@ class QueueRunner(QThread):
                 continue
             try:
                 size = path.stat().st_size
+                self._release([path])
                 what = recycle_or_delete(path, permanent=owner.job.options.permanent_delete)
             except OSError as e:
                 self._note(owner, f"Couldn't remove original {path.name}: {e}")
@@ -171,6 +184,7 @@ class QueueRunner(QThread):
 
             ctx = J.JobContext(log=log, progress=progress, resolve_conflict=self._ask, cancel=token,
                                still_needed=lambda p, item=item: self._needed_later(p, item))
+            ctx.release = self._release
             key = J.job_key(item.job)
             try:
                 res = J.run_job(item.job, ctx)

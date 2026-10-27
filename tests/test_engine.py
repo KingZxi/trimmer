@@ -757,3 +757,20 @@ def test_delete_waits_when_a_later_job_needs_the_original(work):
     r = run_job(ClipJob(str(src), segments=[(0, 5)],
                         options=opts(out, delete_originals=True, permanent_delete=True)), c)
     assert r.status == "done" and src.exists() and r.deferred == [str(src)], logs
+
+
+def test_auto3_target_and_trials_at_the_output_size(work):
+    from trimmer.core import encode as en
+    src = fx.single_clip(work / "single")
+    info = ff.probe(src)
+    s = EncodeSettings(codec="h264", quality="auto3", preset="ultrafast", max_height=240, auto3_target=95)
+    assert en.EncodeSettings.from_dict({**s.to_dict(), "auto3_target": "junk"}).auto3_target == 93.0
+    assert en.ssim_target(93) == 97.0 and en.ssim_target(95) == 98.0
+    with tempfile.TemporaryDirectory() as td:
+        ref, _ = en.build_reference(src, info.duration, Path(td), filters=en.video_filters(s, info))
+        assert ff.probe(ref, use_cache=False).height == 240      # measured at the size it's saved at
+    out = fresh(work, "out_auto3_target")
+    c, logs = ctx()
+    r = run_job(ClipJob(str(src), compress=True, encode=s.to_dict(), options=opts(out)), c)
+    assert r.status == "done", logs
+    assert re.search(r"CRF\d+ auto3-95", Path(r.outputs[0]).name), r.outputs

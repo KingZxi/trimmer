@@ -21,7 +21,7 @@ from ..core.encode import CODECS, EncodeSettings, predict_size, resolve_quality
 from ..core.journal import save_queue
 from ..core.util import format_hms, format_size, logs_dir, sanitize_filename
 from .theme import set_kind
-from .widgets import HintTable, hbox, label
+from .widgets import HintTable, hbox, label, show_in_folder
 from .worker import QueueItem, QueueRunner, Task
 
 STATUS_TEXT = {"queued": "Waiting", "running": "Working", "done": "Done", "reverted": "Kept original",
@@ -60,6 +60,8 @@ def describe(job) -> str:
             q = f"{e.target_size_mb:g} MB"
         else:
             q = str(e.quality) if e.is_auto else f"{'CQ' if hw else 'CRF'}{e.quality}"
+            if e.quality == "auto3" and e.auto3_target != 93.0:
+                q += f" (target {e.auto3_target:g})"
         cap = f" {e.max_height}p" if e.max_height else ""
         bits.append(f"{codec}{hw} {q}{cap}")
     elif isinstance(job, J.MergeJob):
@@ -118,14 +120,6 @@ def estimate_job(job):
     if enc.revert_if_larger and est > plain:
         est = plain
     return est, info.size
-
-
-def reveal(path: Path):
-    """Show a file in Explorer (or its folder elsewhere)."""
-    if sys.platform == "win32" and path.exists():
-        subprocess.Popen(["explorer", "/select,", str(path)])
-    else:
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent if path.is_file() else path)))
 
 
 def sleep_pc():
@@ -480,6 +474,7 @@ class QueueTab(QWidget):
         self.runner.item_log.connect(self._log_line)
         self.runner.item_finished.connect(self._finished)
         self.runner.conflict.connect(self._conflict)
+        self.runner.release.connect(self._release)
         self.runner.paused_changed.connect(self._paused_changed)
         self.runner.batch_finished.connect(self._batch_done)
         self.runner.start()
@@ -587,6 +582,12 @@ class QueueTab(QWidget):
         timer.timeout.connect(tick)
         timer.start(1000)
         box.open()
+
+    def _release(self, paths):
+        try:
+            self.main.release_files([Path(p) for p in paths])
+        finally:
+            self.runner.released()
 
     def _conflict(self, path):
         box = QMessageBox(self)
@@ -824,13 +825,16 @@ class QueueTab(QWidget):
         m.addSeparator()
         if outs:
             m.addAction("Open output", lambda: self._open_file(outs[0]))
-            m.addAction("Show in folder", lambda: reveal(outs[0]))
+            m.addAction("Show output in folder", lambda: show_in_folder(self, outs[0]))
             m.addAction("Copy output path" + ("s" if len(outs) > 1 else ""),
                         lambda: QGuiApplication.clipboard().setText("\n".join(str(p) for p in outs)))
         if one is not None:
-            src = Path(one.job.sources()[0])
+            srcs = [Path(p) for p in one.job.sources()]
+            src = next((p for p in srcs if p.exists()), srcs[0])
             if src.exists():
                 m.addAction("Open original", lambda: self._open_file(src))
+            m.addAction("Show original in folder" if len(srcs) == 1 else "Show originals in folder",
+                        lambda: show_in_folder(self, src))
         if any(i.status != "running" for i in sel):
             m.addSeparator()
             m.addAction("Remove from queue", lambda: self.remove_selected(sel))

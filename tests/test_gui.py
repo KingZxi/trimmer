@@ -989,7 +989,7 @@ def test_autosave_brings_back_work_after_a_crash(monkeypatch):
     assert w2.merge.tree.topLevelItem(1).data(3, Qt.UserRole) == "Ace"
     assert [i.status for i in w2.queue.items] == ["queued"] and not w2.queue.is_running()
     # an autosave while the restore is still loading keeps the clips that haven't loaded yet
-    w2.clips._restore["x.mp4"] = {"path": "x.mp4", "segments": []}
+    w2.clips._restore["x.mp4"] = [{"path": "x.mp4", "segments": []}]
     assert {d["path"] for d in w2.clips.snapshot()["entries"]} == {str(clip), "x.mp4"}
     w2.clips._restore.clear()
     w2.autosave()
@@ -1131,3 +1131,123 @@ def test_queue_deletes_an_original_only_after_every_job_using_it():
     assert [i.status for i in items] == ["done", "skipped"], [i.log for i in items]
     assert p.exists()
     assert any("kept" in line for line in items[0].log)
+
+
+def test_show_original_in_folder(monkeypatch):
+    from trimmer.gui import widgets
+    shown, opened = [], []
+    monkeypatch.setattr(widgets, "reveal", lambda p: shown.append(Path(p)))
+    monkeypatch.setattr(widgets.QDesktopServices, "openUrl", staticmethod(lambda url: opened.append(url.toLocalFile())))
+    d = WORK / "reveal"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / "here.mp4"
+    f.write_bytes(b"x")
+    assert widgets.show_in_folder(None, f) and shown == [f]
+    gone = d / "gone.mp4"
+    assert not widgets.show_in_folder(None, gone)          # asks, and opens the folder it was in
+    assert shown == [f] and Path(opened[0]) == d
+    infos = []
+    monkeypatch.setattr(widgets.QMessageBox, "information", staticmethod(lambda *a, **k: infos.append(a[2])))
+    assert not widgets.show_in_folder(None, d / "no such folder" / "x.mp4")
+    assert "neither does its folder" in infos[0]
+
+
+def test_split_parts_into_separate_clips(monkeypatch):
+    src = WORK / "split_src"
+    src.mkdir(parents=True, exist_ok=True)
+    clip = src / "Split me.mp4"
+    shutil.copy(fx.single_clip(WORK / "src"), clip)
+    w = window(WORK / "split_out")
+    w.queue.auto_start.setChecked(False)
+    c = w.clips
+    w._route([str(clip)])
+    pump(15, lambda: c.entries)
+    c.table.selectRow(0)
+    pump(1)
+    e = c.entries[0]
+    e.segments = [(1.0, 4.0), (8.0, 12.0)]
+    e.out_name = "Round"
+    c._refresh_segments()
+    assert c.b_seg_split.isEnabled()
+    c.split_parts()
+    assert len(c.entries) == 2
+    a, b = c.entries
+    assert a.segments == [(1.0, 4.0)] and b.segments == [(8.0, 12.0)]
+    assert (a.part, b.part) == ((1, 2), (2, 2))
+    assert (a.out_name, b.out_name) == ("Round (part 1)", "Round (part 2)")
+    assert "part 2 of 2" in c.table.item(1, 0).text()
+    b.out_name = "Other name"                      # each part is edited on its own
+    jobs = c.build_jobs(c.entries)
+    assert [j.segments for j in jobs] == [[(1.0, 4.0)], [(8.0, 12.0)]]
+    assert [j.output_name for j in jobs] == ["Round (part 1)", "Other name"]
+    # Adding the file again is still caught as a duplicate, even after one part is removed.
+    c._drop([a])
+    w._route([str(clip)])
+    pump(5)
+    assert len(c.entries) == 1
+    # Both parts come back after a restart.
+    c.split_parts(c.entries[0]) if len(c.entries[0].segments) > 1 else None
+    snap = c.snapshot()
+    c.clear()
+    c.restore({"entries": snap["entries"] + [dict(snap["entries"][0], segments=[[1.0, 4.0]], out_name="",
+                                                  part=[1, 2])]})
+    pump(15, lambda: len(c.entries) == 2)
+    assert sorted(x.segments[0] for x in c.entries) == [(1.0, 4.0), (8.0, 12.0)]
+    assert {x.out_name for x in c.entries} == {"Other name", ""}
+    w.settings.on_close = "discard"
+    w.close()
+
+
+def test_full_screen_preview_and_back():
+    from trimmer.gui.preview import PreviewDialog
+    w = window(WORK / "fs_out")
+    c = w.clips
+    home = c.stage.parentWidget()
+    i = home.layout().indexOf(c.stage)
+    c.full.enter()
+    pump(0.5)
+    assert c.full.active and c.stage.parentWidget() is c.full
+    c.full.leave()
+    pump(0.5)
+    assert not c.full.active and c.stage.parentWidget() is home and home.layout().indexOf(c.stage) == i
+
+    d = PreviewDialog(w, fx.single_clip(WORK / "src"), "Viewer", parent=w)
+    d.show()
+    pump(0.5)
+    d.full.enter()
+    pump(0.5)
+    assert d.stage.parentWidget() is d.full
+    d.close()                                      # closing while full screen leaves it first
+    pump(0.5)
+    assert not d.full.active
+    w.settings.on_close = "discard"
+    w.close()
+
+
+def test_queue_closes_the_preview_before_deleting_an_original(monkeypatch):
+    src = WORK / "release_src"
+    src.mkdir(parents=True, exist_ok=True)
+    clip = src / "Release me.mp4"
+    shutil.copy(fx.single_clip(WORK / "src"), clip)
+    w = window(WORK / "release_out")
+    w.settings.permanent_delete = True
+    c = w.clips
+    w._route([str(clip)])
+    pump(15, lambda: c.entries)
+    c.table.selectRow(0)
+    pump(1)
+    assert c.current is not None
+    released = []
+    real = w.release_files
+    monkeypatch.setattr(w, "release_files", lambda paths: (released.extend(paths), real(paths)))
+    jobs = c.build_jobs(c.entries)
+    jobs[0].segments = [(0.0, 5.0)]
+    jobs[0].options.delete_originals = True
+    jobs[0].options.permanent_delete = True
+    w.queue.add_jobs(jobs, start=False)
+    w.queue.start()
+    pump(60, lambda: finished(w))
+    assert w.queue.items[-1].status == "done", w.queue.items[-1].log
+    assert released == [clip] and c.current is None and not clip.exists()
+    w.settings.on_close = "discard"
+    w.close()

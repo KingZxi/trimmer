@@ -20,9 +20,10 @@ from ..core import ffmpeg as ff
 from ..core.ffmpeg import CancelToken
 from ..core.render import AUDIO_RIP_FORMATS
 from ..core.jobs import JobContext, JobOptions, MergeJob, run_job, session_names
-from ..core.util import VIDEO_EXTENSIONS, format_hms, format_hms_ms, parse_timecode, sanitize_filename
+from ..core.util import VIDEO_EXTENSIONS, format_hms, format_hms_ms, parse_timecode, same_file, sanitize_filename
 from .theme import colour, set_kind
-from .widgets import OWN_TIP, STAR, HintTree, OptionBinding, card, clean_opts, copy_opts, hbox, label
+from .widgets import (OWN_TIP, STAR, HintTree, OptionBinding, card, clean_opts, copy_opts, hbox, label,
+                      show_in_folder)
 from .folder_watch import FolderWatcher
 from .preview import PreviewDialog
 from .queue_checks import check_new_jobs
@@ -939,6 +940,9 @@ class MergeTab(QWidget):
         if not clips:
             return
         m = QMenu(self)
+        m.addAction("Show original in folder" if len(clips) == 1 else "Show originals in folder",
+                    lambda: show_in_folder(self, clips[0].path))
+        m.addSeparator()
         m.addAction(f"Send {len(clips)} clip{'s' if len(clips) != 1 else ''} to Clips",
                     lambda: self.send_to_clips())
         multi = [s for s in sessions if len(s.clips) > 1]
@@ -970,6 +974,11 @@ class MergeTab(QWidget):
         paths = [c.path for c in clips]
         self._take(paths)
         self.main.send_to_clips(paths)
+
+    def release(self, paths):
+        """Close the viewers of files that are about to be deleted."""
+        for d in [d for d in self.viewers if any(same_file(d.clip.path, p) for p in paths)]:
+            d.close()
 
     def delete_selected(self, clips=None):
         """Move clips (default: the selection) to the Recycle Bin (or delete them, as Settings say) and
