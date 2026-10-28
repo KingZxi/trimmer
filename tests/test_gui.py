@@ -1132,6 +1132,19 @@ def test_queue_deletes_an_original_only_after_every_job_using_it():
     assert p.exists()
     assert any("kept" in line for line in items[0].log)
 
+    # Split parts, every one set to delete: the first part doesn't finish, so the
+    # later parts must not delete the original either.
+    p = make()
+    shutil.rmtree(out)
+    out.mkdir(parents=True)
+    (out / "clip (trimmed 0m04s-0m10s).mp4").write_bytes(b"taken")
+    items = [QueueItem(job(p, (6, 10), True, "skip")), QueueItem(job(p, (0, 4), True)),
+             QueueItem(job(p, (12, 16), True))]
+    QueueRunner(items).run()
+    assert [i.status for i in items] == ["skipped", "done", "done"], [i.log for i in items]
+    assert p.exists(), [i.log for i in items]
+    assert any("didn't finish (skipped)" in line for line in items[2].log)
+
 
 def test_show_original_in_folder(monkeypatch):
     from trimmer.gui import widgets

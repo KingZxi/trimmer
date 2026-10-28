@@ -114,11 +114,29 @@ class QueueRunner(QThread):
         return any(i is not item and i.status in ("queued", "running")
                    and any(same_file(path, s) for s in i.job.sources()) for i in list(self.items))
 
+    def _unfinished_user(self, path, item):
+        """Another job on this file that failed, was cancelled or skipped: its
+        part of the file was never saved, so the original must stay."""
+        return next((i for i in list(self.items) if i is not item and i.status in ("failed", "cancelled", "skipped")
+                     and any(same_file(path, s) for s in i.job.sources())), None)
+
+    def _still_needed(self, path, item):
+        if self._needed_later(path, item):
+            return "another job in the queue still uses it"
+        other = self._unfinished_user(path, item)
+        if other is not None:
+            return f"{other.job.title} on the same file didn't finish ({other.status})"
+        return ""
+
     def _after_job(self, item):
         """Note a deferred original's new users, then remove what nothing waits for."""
         if item.result is not None and item.result.deferred:
             for p in item.result.deferred:
-                self.pending_deletes.append({"path": p, "item": item, "ok": True})
+                other = self._unfinished_user(p, item)
+                self.pending_deletes.append({"path": p, "item": item, "ok": other is None})
+                if other is not None:
+                    self._note(item, f"Original {Path(p).name} kept: {other.job.title} didn't finish "
+                                     f"({other.status}).")
         for d in self.pending_deletes:
             if d["item"] is not item and any(same_file(d["path"], s) for s in item.job.sources()) \
                     and item.status not in ("done", "reverted"):
@@ -183,7 +201,7 @@ class QueueRunner(QThread):
                 self.item_progress.emit(item.id, stage, p.fraction, p.eta, p.size)
 
             ctx = J.JobContext(log=log, progress=progress, resolve_conflict=self._ask, cancel=token,
-                               still_needed=lambda p, item=item: self._needed_later(p, item))
+                               still_needed=lambda p, item=item: self._still_needed(p, item))
             ctx.release = self._release
             key = J.job_key(item.job)
             try:

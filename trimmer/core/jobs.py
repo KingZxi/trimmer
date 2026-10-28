@@ -226,7 +226,8 @@ class JobContext:
         self.progress = progress or (lambda stage, p: None)
         self.resolve_conflict = resolve_conflict or (lambda p: "rename")
         self.cancel = cancel or CancelToken()
-        # True for an original a later job in the queue still reads: its delete waits.
+        # Truthy (True or a reason) for an original another queued job still reads,
+        # or one whose other job didn't finish: its delete waits, or doesn't happen.
         self.still_needed = still_needed or (lambda p: False)
         # Asks whoever runs the job to let go of these files (close previews) before they're deleted.
         self.release: Callable[[List[Path]], None] = lambda paths: None
@@ -717,10 +718,12 @@ def _delete_sources(job, sources: List[Path], outputs: List[Path], ctx, res: Job
     for s in sources:
         if str(Path(s).resolve()) in out_set:
             continue
-        if ctx.still_needed(Path(s)):
+        why = ctx.still_needed(Path(s))
+        if why:
             res.deferred.append(str(s))
-            ctx.log(f"Original {Path(s).name} kept for now: a later job in the queue still uses it. "
-                    f"It is removed once those jobs have saved their outputs.")
+            ctx.log(f"Original {Path(s).name} kept for now: "
+                    + (why if isinstance(why, str) else "a later job in the queue still uses it") + ". "
+                    f"It is removed once every job using it has saved its outputs.")
             continue
         doomed.append(Path(s))
     if doomed:
