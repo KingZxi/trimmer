@@ -14,7 +14,7 @@ import re
 import tempfile
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from . import ffmpeg as ff
 from .ffmpeg import CancelToken, FFmpegError, MediaInfo
@@ -325,20 +325,36 @@ def estimate_crf_heuristic(src: Path, info: MediaInfo, settings: EncodeSettings,
     return int(round(max(15 + off, min(34 + off, crf))))
 
 
+# Bitrates of auto3's own trial encodes, so predicting the size of the CRF it
+# picked costs nothing: (source, its size and date, settings, CRF) -> kbps.
+_trial_kbps: Dict[tuple, float] = {}
+
+
+def _trial_key(src: Path, settings: EncodeSettings, quality: int) -> tuple:
+    try:
+        st = Path(src).stat()
+        stamp = (st.st_size, st.st_mtime)
+    except OSError:
+        stamp = None
+    return (str(src), stamp, json.dumps(settings.to_dict(), sort_keys=True), quality)
+
+
 def predict_size(src: Path, info: MediaInfo, settings: EncodeSettings, quality: int,
                  seconds: float, cancel: CancelToken = None) -> int:
     """Estimated output bytes for `seconds` of this clip at these settings,
-    from encoding the sample windows with the real encoder and preset.
-    Audio is estimated from the source's track bitrates (or the chosen
-    AAC bitrate)."""
-    with tempfile.TemporaryDirectory(prefix="trimmer_predict_") as td:
-        tmp = Path(td)
-        ref, length = build_reference(src, info.duration, tmp, cancel)
-        vargs = video_codec_args(settings, info, quality=quality, container=".mkv")
-        vf = video_filters(settings, info)
-        if vf:
-            vargs += ["-vf", ",".join(vf)]
-        kbps = _encode_kbps(ref, length, vargs, tmp, "predict.mkv", cancel)
+    from encoding the sample windows with the real encoder and preset (or
+    auto3's trial at that CRF, when it already made one). Audio is estimated
+    from the source's track bitrates (or the chosen AAC bitrate)."""
+    kbps = _trial_kbps.get(_trial_key(src, settings, quality))
+    if kbps is None:
+        with tempfile.TemporaryDirectory(prefix="trimmer_predict_") as td:
+            tmp = Path(td)
+            ref, length = build_reference(src, info.duration, tmp, cancel)
+            vargs = video_codec_args(settings, info, quality=quality, container=".mkv")
+            vf = video_filters(settings, info)
+            if vf:
+                vargs += ["-vf", ",".join(vf)]
+            kbps = _encode_kbps(ref, length, vargs, tmp, "predict.mkv", cancel)
     if settings.audio == "copy":
         akbps = sum((a.bit_rate or 160000) for a in info.audio) / 1000
     else:
@@ -381,7 +397,7 @@ def estimate_crf_measured(src: Path, info: MediaInfo, settings: EncodeSettings,
     lo_bound, hi_bound = 15 + off, 34 + off
     with tempfile.TemporaryDirectory(prefix="trimmer_auto3_") as td:
         tmp = Path(td)
-        ref, _length = build_reference(src, info.duration, tmp, cancel, video_filters(settings, info))
+        ref, length = build_reference(src, info.duration, tmp, cancel, video_filters(settings, info))
 
         lo, hi = lo_bound, hi_bound
         best = None
@@ -406,6 +422,8 @@ def estimate_crf_measured(src: Path, info: MediaInfo, settings: EncodeSettings,
                 use_vmaf = False
                 target = ssim_target(settings.auto3_target)
                 score = _quality_score(ref, trial, False, tmp, cancel)
+            if trial.exists():
+                _trial_kbps[_trial_key(src, settings, mid)] = trial.stat().st_size * 8 / max(length, 0.1) / 1000
             tried.append(mid)
             if score >= target:
                 best = mid

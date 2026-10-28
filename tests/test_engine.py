@@ -154,6 +154,58 @@ def test_packet_merge_with_compress_single_pass(work):
     assert abs(ff.probe(f, use_cache=False).duration - 48.0) < 0.3
 
 
+def test_compressed_merge_never_bigger_than_plain_merge(work):
+    clips = fx.shared_replays(work / "shared")
+    out = fresh(work, "out_packet_bigger")
+    # Lossless is far bigger than the source: the encode stops and a plain merge is saved instead.
+    enc = EncodeSettings(mode="lossless", codec="h264", preset="ultrafast", revert_if_larger=True).to_dict()
+    c, logs = ctx()
+    r = run_job(MergeJob([str(p) for p in clips[:4]], compress=True, encode=enc, options=opts(out)), c)
+    assert r.status == "done", logs
+    f = next(out.glob("Merged*.mp4"))
+    assert f.name.endswith("(NOT COMPRESSED).mp4") and "LOSSLESS" not in f.name, f.name
+    assert any("larger than a plain merge" in l for l in logs), logs
+    assert any("Nothing-lost check passed" in l for l in logs), logs
+    assert not list(out.glob("*.part*"))
+
+    # A lossy encode the sample already shows is bigger never runs at all.
+    out2 = fresh(work, "out_packet_predicted")
+    enc = EncodeSettings(codec="h264", quality=1, preset="ultrafast", revert_if_larger=True).to_dict()
+    c, logs = ctx()
+    run_job(MergeJob([str(p) for p in clips[:4]], compress=True, encode=enc, options=opts(out2)), c)
+    assert any("Predicted size" in l for l in logs), logs
+    assert next(out2.glob("Merged*.mp4")).name.endswith("(NOT COMPRESSED).mp4")
+
+    # One that really is smaller is kept compressed.
+    out3 = fresh(work, "out_packet_smaller")
+    enc = EncodeSettings(codec="h264", quality=40, preset="medium", revert_if_larger=True).to_dict()
+    c, logs = ctx()
+    run_job(MergeJob([str(p) for p in clips[:4]], compress=True, encode=enc, options=opts(out3)), c)
+    assert "(CRF40, H264, medium)" in next(out3.glob("Merged*.mp4")).name, logs
+
+
+def test_fallback_merge_never_bigger_than_plain_merge(work):
+    clips = fx.independent_replays(work / "indep", wrong_offset=1)
+    enc = EncodeSettings(mode="lossless", codec="h264", preset="ultrafast", revert_if_larger=True).to_dict()
+    out = fresh(work, "out_fallback_bigger")
+    c, logs = ctx()
+    # "Lossless" so a plain merge is possible here (its keyframe cuts repeat 1.75 s).
+    r = run_job(MergeJob([str(p) for p in clips], compress=True, encode=enc,
+                         options=opts(out, merge_method="lossless")), c)
+    assert r.status == "done", logs
+    f = next(out.glob("Merged*.mp4"))
+    assert f.name.endswith("(NOT COMPRESSED).mp4"), f.name
+    assert 47.9 <= ff.probe(f, use_cache=False).duration <= 52.5
+    out2 = fresh(work, "out_fallback_trim_bigger")
+    c, logs = ctx()
+    r = run_job(MergeJob([str(p) for p in clips], compress=True, encode=enc,
+                         options=opts(out2, merge_mode="trim")), c)
+    assert r.status == "done", logs
+    files = sorted(next(out2.glob("Session *")).glob("*.mp4"))
+    assert len(files) == 3 and all("(NOT COMPRESSED)" in f.name for f in files), files
+    assert not list(out2.rglob("*.part*"))
+
+
 # ---------------------------------------------------------------- replay rips
 
 def n_streams(path):
@@ -799,3 +851,16 @@ def test_split_parts_lose_nothing(work, exact):
         assert sum(a == b for a, b in zip(joined, full)) >= len(full) - 3 * 60
     else:
         assert set(full) <= set(sum(got, []))      # copies start on a keyframe, so they may overlap
+
+
+def test_auto3_size_prediction_reuses_its_trials(work, monkeypatch):
+    from trimmer.core import encode as en
+    src = fx.single_clip(work / "single")
+    info = ff.probe(src)
+    s = EncodeSettings(codec="h264", quality="auto3", preset="ultrafast")
+    crf, _ = en.estimate_crf_measured(src, info, s)
+
+    def no_encode(*a, **k):
+        raise AssertionError("predict_size encoded again")
+    monkeypatch.setattr(en, "_encode_kbps", no_encode)
+    assert en.predict_size(src, info, s, crf, info.duration) > 0

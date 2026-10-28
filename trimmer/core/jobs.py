@@ -33,6 +33,7 @@ from .util import (VIDEO_EXTENSIONS, format_hms_ms, format_size, recycle_or_dele
                    sanitize_filename, trim_range_label, unique_path)
 
 VIDEO_ONLY = " - video only"      # name extra of the video-only rip
+NOT_COMPRESSED = " (NOT COMPRESSED)"    # kept uncompressed because compressing made it bigger
 
 # Used when a cut must be frame-exact but the user didn't ask to compress:
 # high quality H.264, same as the old merger's defaults.
@@ -510,7 +511,7 @@ def _write_video(job: ClipJob, ctx: JobContext, info, spans: List[Span], out_dir
                     f"{format_size(original_equiv)}); keeping the original footage instead.")
             res.status = "reverted"
             _snap(ctx, spans)
-            final = _claim(out_dir / f"{stem}{_tags(job, spans)}{name_extra} (NOT COMPRESSED){ext}",
+            final = _claim(out_dir / f"{stem}{_tags(job, spans)}{name_extra}{NOT_COMPRESSED}{ext}",
                            ctx, opts, [src])
             return _write_copy(job, ctx, info, spans, final, audio, res,
                                _clip_tag(job, info, audio, video_only=name_extra == VIDEO_ONLY))
@@ -981,8 +982,29 @@ def _packet_session(job, ctx, session, pj: pk.PacketJoin, out_root, merged_name,
         return outputs
 
 
+def _plain_limit(ctx, enc, audio: AudioPlan, plain: int, q, src: Path, info, seconds: float):
+    """With "keep the original if compressing would make it bigger" on, the
+    size a compressed merge must stay under (a plain merge's), or "predicted"
+    when the sample encode already shows it won't. None = no limit."""
+    if enc is None or not enc.revert_if_larger or enc.mode == "target_size" or audio.needs_filter:
+        return None
+    if enc.mode == "lossy" and q is not None:
+        ctx.stage("Predicting output size")
+        guess = predict_size(src, info, enc, q, seconds, ctx.cancel)
+        if guess > plain * 1.05:
+            ctx.log(f"Predicted size {format_size(guess)} is larger than a plain merge "
+                    f"({format_size(plain)}); merging without compressing instead.")
+            return "predicted"
+    return plain
+
+
+def _too_large_note(ctx, r, plain: int):
+    ctx.log(f"Compressed output would be larger than a plain merge ({format_size(r.last_size)} vs "
+            f"{format_size(plain)}); merging without compressing instead.")
+
+
 def _packet_output(job, ctx, pj: pk.PacketJoin, folder: Path, stem: str, ext: str, enc, audio: AudioPlan,
-                   srcs, tmpdir: Path, stage: str, trim: str = "") -> Path:
+                   srcs, tmpdir: Path, stage: str, trim: str = "", extra: str = "") -> Path:
     tmpdir.mkdir(parents=True, exist_ok=True)
     vlist, alist = pk.write_concat_lists(pj, tmpdir)
     info = pj.pieces[0].clip.info
@@ -991,11 +1013,16 @@ def _packet_output(job, ctx, pj: pk.PacketJoin, folder: Path, stem: str, ext: st
     total = pj.total_duration
     label = ""
     q = None
+    limit = None
     if enc is not None:
         q, method = resolve_quality(pj.pieces[0].clip.path, info, enc, ctx.cancel, ctx.log) \
             if enc.mode == "lossy" else (None, None)
         label = _qlabel(job.options, enc, q, method)
-    final = _claim(folder / f"{sanitize_filename(stem + job.options.name_suffix)}{trim}{label}{ext}",
+        limit = _plain_limit(ctx, enc, audio, pj.copy_bytes(), q, pj.pieces[0].clip.path, info, total)
+        if limit == "predicted":
+            return _packet_output(job, ctx, pj, folder, stem, ext, None, audio, srcs, tmpdir, stage, trim,
+                                  NOT_COMPRESSED)
+    final = _claim(folder / f"{sanitize_filename(stem + job.options.name_suffix)}{trim}{extra}{label}{ext}",
                    ctx, job.options, srcs)
     part = _part(final)
     tag = _merge_tag(job, info.trimmer_tag, audio, n_avail, enc, q)
@@ -1073,7 +1100,12 @@ def _packet_output(job, ctx, pj: pk.PacketJoin, folder: Path, stem: str, ext: st
         if ext in (".mp4", ".mov"):
             args += ["-movflags", "+faststart"]
         args += tag_args(tag) + ["-y", str(part)]
-        r = ff.run_ffmpeg(args, total, ctx.reporter(stage), ctx.cancel, output_path=part)
+        r = ff.run_ffmpeg(args, total, ctx.reporter(stage), ctx.cancel, size_limit=limit, output_path=part)
+        if r.status == "too_large":
+            safe_unlink(part)
+            _too_large_note(ctx, r, limit)
+            return _packet_output(job, ctx, pj, folder, stem, ext, None, audio, srcs, tmpdir, stage, trim,
+                                  NOT_COMPRESSED)
         if not r.ok:
             raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
         ctx.stage("Verifying")
@@ -1187,19 +1219,38 @@ def _fallback_session(job, ctx, session: mg.SessionPlan, out_root, merged_name, 
                 else:
                     ctx.log(f"{c.path.name}: re-encoding for an exact cut ({note})")
                     use_enc = EncodeSettings.from_dict(EXACT_SETTINGS.to_dict())
-            cut = span.start
             q, method = (resolve_quality(c.path, c.info, use_enc, ctx.cancel, ctx.log)
                          if use_enc is not None and use_enc.mode == "lossy" else (None, None))
-            label = _qlabel(job.options, use_enc, q, method) if enc is not None else ""
-            trim = _trim_tag(opts, [(cut, c.info.duration)] if cut > 0.01 else [])
-            final = _claim(folder / f"{sanitize_filename(c.path.stem + opts.name_suffix)}{trim}{label}{ext}",
-                           ctx, opts, srcs)
-            part = _part(final)
-            ctx.progress(f"Clip {i + 1} of {len(plan)}", Progress(None, 0, None, None, None))
-            tag = _merge_tag(job, c.info.trimmer_tag, audio, len(c.info.audio), enc, q)
-            r = render([span], part, encode=use_enc, quality=q, audio=audio,
-                       on_progress=ctx.reporter(f"Clip {i + 1} of {len(plan)}"), cancel=ctx.cancel,
-                       log=ctx.log, tag=tag)
+            limit, copy_span = None, None
+            if enc is not None and enc.revert_if_larger and not audio.needs_filter:
+                kf = span.start if span.start <= 0.01 or opts.merge_method == "exact" else \
+                    mg.pick_lossless_cut(c.path, span.start, mopts.never_lose, mopts.lossless_max_repeat)[0]
+                if kf is not None and opts.merge_method != "exact":
+                    copy_span = Span(c.path, c.info, kf, None)
+                    plain = int(c.info.size * copy_span.length / c.info.duration) if c.info.duration else c.info.size
+                    limit = _plain_limit(ctx, enc, audio, plain, q, c.path, c.info, span.length)
+            extra = ""
+            while True:
+                if limit == "predicted":
+                    span, use_enc, q, limit, extra = copy_span, None, None, None, NOT_COMPRESSED
+                cut = span.start
+                label = _qlabel(job.options, use_enc, q, method) if enc is not None and use_enc is not None else ""
+                trim = _trim_tag(opts, [(cut, c.info.duration)] if cut > 0.01 else [])
+                final = _claim(folder / f"{sanitize_filename(c.path.stem + opts.name_suffix)}{trim}{extra}{label}"
+                               f"{ext}", ctx, opts, srcs)
+                part = _part(final)
+                ctx.progress(f"Clip {i + 1} of {len(plan)}", Progress(None, 0, None, None, None))
+                tag = _merge_tag(job, c.info.trimmer_tag, audio, len(c.info.audio),
+                                 enc if use_enc is not None else None, q)
+                r = render([span], part, encode=use_enc, quality=q, audio=audio,
+                           on_progress=ctx.reporter(f"Clip {i + 1} of {len(plan)}"), cancel=ctx.cancel,
+                           log=ctx.log, tag=tag, size_limit=limit if isinstance(limit, int) else None)
+                if r.status == "too_large":
+                    safe_unlink(part)
+                    _too_large_note(ctx, r, limit)
+                    limit = "predicted"
+                    continue
+                break
             if not r.ok:
                 raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
             problem = verify_output(part, span.length, True, None)
@@ -1215,13 +1266,12 @@ def _fallback_session(job, ctx, session: mg.SessionPlan, out_root, merged_name, 
         return outputs
 
     # Merge into one video.
-    spans = [Span(e.clip.path, e.clip.info, e.trim_start, None) for e in plan]
-    use_enc = enc
-    cuts = [(e.clip, e.trim_start) for e in plan]
-    if use_enc is None:
-        reason = None if opts.merge_method != "exact" else "frame-exact merge was chosen"
-        if reason is None:
-            reason = copy_compatible(spans)
+    def copy_plan():
+        """Spans and cuts for a stream-copied join, or the reason there can't be one."""
+        spans = [Span(e.clip.path, e.clip.info, e.trim_start, None) for e in plan]
+        if opts.merge_method == "exact":
+            return None, "frame-exact merge was chosen"
+        reason = copy_compatible(spans)
         if reason is None:
             for s in spans:
                 if s.start > 0.01:
@@ -1231,28 +1281,56 @@ def _fallback_session(job, ctx, session: mg.SessionPlan, out_root, merged_name, 
                              else min(0.5, mopts.lossless_max_repeat))
                     kf, note = mg.pick_lossless_cut(s.path, s.start, mopts.never_lose, limit)
                     if kf is None:
-                        reason = f"{s.path.name}: {note}"
-                        break
+                        return None, f"{s.path.name}: {note}"
                     ctx.log(f"{s.path.name}: {note}")
                     s.start = kf
+        return (spans, None) if reason is None else (None, reason)
+
+    spans = [Span(e.clip.path, e.clip.info, e.trim_start, None) for e in plan]
+    use_enc = enc
+    cuts = [(e.clip, e.trim_start) for e in plan]
+    extra = ""
+    copied = None
+    if use_enc is None:
+        copied, reason = copy_plan()
         if reason is not None:
             if opts.merge_method == "lossless":
                 raise FFmpegError(f"A lossless merge isn't possible here ({reason}). "
                                   f"Choose 'Auto' or 'Frame-exact' as the merge method.")
             ctx.log(f"Joining by re-encode ({reason}).")
-            spans = [Span(e.clip.path, e.clip.info, e.trim_start, None) for e in plan]
             use_enc = EncodeSettings.from_dict(EXACT_SETTINGS.to_dict())
-        else:
-            cuts = [(s_clip.clip, s.start) for s_clip, s in zip(plan, spans)]
     q, method = (resolve_quality(first.path, first.info, use_enc, ctx.cancel, ctx.log)
                  if use_enc is not None and use_enc.mode == "lossy" else (None, None))
-    label = _qlabel(job.options, use_enc, q, method) if enc is not None else ""
-    final = _claim(out_root / f"{sanitize_filename(merged_name + opts.name_suffix)}{label}{ext}", ctx, opts, srcs)
-    part = _part(final)
-    total = sum(s.length for s in spans)
-    tag = _merge_tag(job, first.info.trimmer_tag, audio, len(first.info.audio), enc, q)
-    r = render(spans, part, encode=use_enc, quality=q, audio=audio, on_progress=ctx.reporter("Merging"),
-               cancel=ctx.cancel, log=ctx.log, normalize_audio=use_enc is not None, tag=tag)
+    limit = None
+    if enc is not None and enc.revert_if_larger and not audio.needs_filter:
+        copied, _reason = copy_plan()           # only worth comparing when a plain merge is possible
+        if copied is not None:
+            plain = int(sum(s.info.size * s.length / s.info.duration if s.info.duration else s.info.size
+                            for s in copied))
+            limit = _plain_limit(ctx, enc, audio, plain, q, first.path, first.info,
+                                 sum(s.length for s in spans))
+    while True:
+        if limit == "predicted":
+            use_enc, q, limit, spans, extra = None, None, None, copied, NOT_COMPRESSED
+        if use_enc is None and copied is not None:
+            spans = copied
+            cuts = [(e.clip, s.start) for e, s in zip(plan, spans)]
+        label = _qlabel(job.options, use_enc, q, method) if use_enc is not None and enc is not None else ""
+        final = _claim(out_root / f"{sanitize_filename(merged_name + opts.name_suffix)}{extra}{label}{ext}",
+                       ctx, opts, srcs)
+        part = _part(final)
+        total = sum(s.length for s in spans)
+        tag = _merge_tag(job, first.info.trimmer_tag, audio, len(first.info.audio),
+                         enc if use_enc is not None else None, q)
+        r = render(spans, part, encode=use_enc, quality=q, audio=audio, on_progress=ctx.reporter("Merging"),
+                   cancel=ctx.cancel, log=ctx.log, normalize_audio=use_enc is not None, tag=tag,
+                   size_limit=limit if isinstance(limit, int) else None)
+        if r.status == "too_large":
+            safe_unlink(part)
+            _too_large_note(ctx, r, limit)
+            limit = "predicted"
+            continue
+        break
     if not r.ok:
         raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
     ctx.stage("Verifying")

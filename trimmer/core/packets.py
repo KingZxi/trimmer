@@ -203,6 +203,11 @@ class PacketJoin:
     def expected_audio(self) -> List[str]:
         return sum((p.used_audio() for p in self.pieces), [])
 
+    def copy_bytes(self) -> int:
+        """About how big a stream-copied join is: each clip's size for the
+        share of its frames that is used."""
+        return int(sum(p.clip.info.size * len(p.used_video()) / max(1, len(p.video)) for p in self.pieces))
+
     @property
     def total_duration(self) -> float:
         total = 0.0
