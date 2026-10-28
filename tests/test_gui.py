@@ -1280,3 +1280,35 @@ def test_default_track_with_tracks_of_the_same_name():
     assert other.currentIndex() == 2           # a unique name still wins
     other.set_tracks(["1: Audio", "2: Mic"], ["Audio", "Mic"])
     assert other.currentIndex() == 0           # position 3 isn't there: the track with the name
+
+
+def test_split_here_makes_parts_with_nothing_between():
+    src = WORK / "splithere_src"
+    src.mkdir(parents=True, exist_ok=True)
+    clip = src / "Cut me.mp4"
+    shutil.copy(fx.single_clip(WORK / "src"), clip)
+    w = window(WORK / "splithere_out")
+    c = w.clips
+    w._route([str(clip)])
+    pump(15, lambda: c.entries)
+    c.table.selectRow(0)
+    pump(1)
+    end = c.entries[0].info.duration
+    c.split_here(6.0)
+    assert [x.segments for x in c.entries] == [[(0.0, 6.0)], [(6.0, end)]]
+    assert c.current is c.entries[1]                  # carry on from the cut
+    c.split_here(12.5)
+    assert [x.segments for x in c.entries] == [[(0.0, 6.0)], [(6.0, 12.5)], [(12.5, end)]]
+    assert [x.part for x in c.entries] == [(1, 3), (2, 3), (3, 3)]
+    # A clip with kept parts splits the part under the playhead and keeps the rest.
+    c.table.selectRow(0)
+    pump(1)
+    c.current.segments = [(0.5, 2.0), (3.0, 5.5)]
+    c.split_here(4.0)
+    assert [x.segments for x in c.entries[:2]] == [[(0.5, 2.0), (3.0, 4.0)], [(4.0, 5.5)]]
+    c.split_here(2.5)                                 # in a gap: nothing happens
+    assert len(c.entries) == 4 and "inside the kept footage" in c.trim_info.text()
+    jobs = c.build_jobs(c.entries)
+    assert [j.segments for j in jobs] == [[(0.5, 2.0), (3.0, 4.0)], [(4.0, 5.5)], [(6.0, 12.5)], [(12.5, end)]]
+    w.settings.on_close = "discard"
+    w.close()

@@ -774,3 +774,28 @@ def test_auto3_target_and_trials_at_the_output_size(work):
     r = run_job(ClipJob(str(src), compress=True, encode=s.to_dict(), options=opts(out)), c)
     assert r.status == "done", logs
     assert re.search(r"CRF\d+ auto3-95", Path(r.outputs[0]).name), r.outputs
+
+
+@pytest.mark.parametrize("exact", [True, False])
+def test_split_parts_lose_nothing(work, exact):
+    """A clip split at 7.3 s and 13.1 s: the three files together hold every
+    frame of the source (frame-exact: each exactly once, in order)."""
+    src = fx.single_clip(work / "single")
+    out = fresh(work, f"out_split_{exact}")
+    c, logs = ctx()
+    files = []
+    for k, seg in enumerate([(0.0, 7.3), (7.3, 13.1), (13.1, None)]):
+        r = run_job(ClipJob(str(src), segments=[seg], output_name=f"part {k}",
+                            options=opts(out, exact_cuts=exact)), c)
+        assert r.status == "done", logs
+        files.append(r.outputs[0])
+    full = _decoded(src)
+    got = [_decoded(f) for f in files]
+    if exact:
+        # Every source frame once, in order: the frame count adds up and every
+        # frame that wasn't re-encoded at a cut is the source's own, in place.
+        joined = sum(got, [])
+        assert len(joined) == len(full), [len(g) for g in got]
+        assert sum(a == b for a, b in zip(joined, full)) >= len(full) - 3 * 60
+    else:
+        assert set(full) <= set(sum(got, []))      # copies start on a keyframe, so they may overlap

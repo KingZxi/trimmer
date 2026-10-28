@@ -200,11 +200,15 @@ class ClipsTab(QWidget):
         b_out = QPushButton("Mark out")
         b_out.setToolTip("End the kept part here  (O)")
         b_out.clicked.connect(self.mark_out)
+        b_split = QPushButton("Split here")
+        b_split.setToolTip("Cut the clip in two at this point: two clips in the list, saved as separate files, "
+                           "with nothing lost between them. Split a part again to make more.  (S)")
+        b_split.clicked.connect(lambda: self.split_here())
         b_full = QPushButton("Full screen")
         b_full.setToolTip("Full screen  (F11 or double-click the video; Esc to leave)")
         b_full.clicked.connect(lambda: self.full.toggle())
         stage.addWidget(hbox(self.b_play, b_back, b_fwd, self.time_label, "stretch",
-                             hear, self.preview_track, b_in, b_out, b_full, stretch_end=False))
+                             hear, self.preview_track, b_in, b_out, b_split, b_full, stretch_end=False))
         if not HAVE_PLAYBACK:       # still-frame preview has no sound
             hear.hide()
             self.preview_track.hide()
@@ -333,7 +337,8 @@ class ClipsTab(QWidget):
         split.setStretchFactor(1, 5)
         split.setSizes([540, 700])
 
-        player_keys = (("I", self.mark_in), ("O", self.mark_out), ("Space", self.toggle_play),
+        player_keys = (("I", self.mark_in), ("O", self.mark_out), ("S", lambda: self.split_here()),
+                       ("Space", self.toggle_play),
                        ("Left", lambda: self.step(-1)), ("Right", lambda: self.step(1)),
                        ("J", lambda: self.jump(-5)), ("L", lambda: self.jump(5)))
         self.full = FullScreen(self.stage, self.video, player_keys, "Trimmer: Clips preview", parent=self)
@@ -599,16 +604,50 @@ class ClipsTab(QWidget):
         e = e or self.current
         if e is None or len(e.segments) < 2:
             return
-        r = self.entries.index(e)
         n = len(e.segments)
+        names = [f"{e.out_name} (part {k})" if e.out_name else "" for k in range(1, n + 1)]
+        self._replace(e, [[seg] for seg in e.segments], names)
+        self.table.selectRow(self.entries.index(next(x for x in self.entries if x.path == e.path
+                                                     and x.segments[0] == e.segments[0])))
+        self.status.emit(f"Split into {n} clips: each part is now saved as its own file, with its own name "
+                         f"and options.")
+
+    def split_here(self, t=None):
+        """Cut the selected clip in two at the playhead (or `t`): the kept footage
+        before it becomes one clip and the rest another, each saved as its own
+        file. Nothing between them is lost. The second part is selected, at the
+        cut, so you can play on and split again."""
+        e = self.current
+        if e is None:
+            return
+        t = self._now() if t is None else t
+        end = e.info.duration
+        segs = [(a, end if b is None else b) for a, b in (e.segments or [(0.0, end)])]
+        i = next((k for k, (a, b) in enumerate(segs) if a + 0.1 <= t <= b - 0.1), None)
+        if i is None:
+            self.trim_info.setText("Move the playhead inside the kept footage, at least 0.1 s from its ends, "
+                                   "to split there.")
+            return
+        a, b = segs[i]
+        first, second = segs[:i] + [(a, t)], [(t, b)] + segs[i + 1:]
+        parts = self._replace(e, [first, second], [e.out_name, e.out_name])
+        later = parts[1]
+        self.table.selectRow(self.entries.index(later))
+        self.player.setPosition(int(t * 1000))
+        self.status.emit(f"Split at {format_hms_ms(t)}: two clips, saved as separate files. Nothing between them "
+                         f"is lost; tick 'Frame-exact cuts' for a cut with no overlap.")
+
+    def _replace(self, e, segment_lists, names):
+        """Put one clip per segment list where e was, with e's options, and number
+        every split part of that file in time order. Returns the new clips."""
+        r = self.entries.index(e)
         parts = []
-        for k, seg in enumerate(e.segments, 1):
+        for segs, name in zip(segment_lists, names):
             x = ClipEntry(e.path, e.info)
-            x.segments = [seg]
+            x.segments = list(segs)
             x.note = e.note
             x.opts = copy_opts(e.opts) if e.opts is not None else None
-            x.out_name = f"{e.out_name} (part {k})" if e.out_name else ""
-            x.part = (k, n)
+            x.out_name = name
             parts.append(x)
         if e is self.current:
             self._load(None)
@@ -617,10 +656,12 @@ class ClipsTab(QWidget):
         self.table.removeRow(r)
         for i, x in enumerate(parts):
             self.table.insertRow(r + i)
-            self._fill_row(r + i, x)
-        self.table.selectRow(r)
-        self.status.emit(f"Split into {n} clips: each part is now saved as its own file, with its own name "
-                         f"and options.")
+        same = sorted((x for x in self.entries if x.path == e.path and (x.part or x in parts)),
+                      key=lambda x: x.segments[0][0] if x.segments else 0.0)
+        for k, x in enumerate(same, 1):
+            x.part = (k, len(same))
+            self._fill_row(self.entries.index(x), x)
+        return parts
 
     def clear(self):
         self.entries.clear()
