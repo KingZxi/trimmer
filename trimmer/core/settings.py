@@ -62,6 +62,11 @@ class AppSettings:
     generate_clip_log: bool = False
     watch_folder: str = ""              # OBS replay folder to watch for new clips
     watch_enabled: bool = False
+    # Queue
+    game_pause: bool = False              # pause while a game is full screen, resume after
+    game_pause_ignore: str = ""           # program names that never count ("" = the built-in list)
+    pause_hotkey: str = "Ctrl+Alt+P"      # global key to pause / resume the queue ("" = none)
+    pause_sounds: bool = True             # chime when the key or a game pauses / resumes the queue
     # Tools and UI
     ffmpeg_dir: str = ""
     theme: str = "dark"

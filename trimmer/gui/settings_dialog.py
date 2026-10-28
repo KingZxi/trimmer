@@ -1,7 +1,10 @@
 """Settings dialog and the OBS tips page."""
 
+from PySide6.QtCore import QTimer
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
-                               QFileDialog, QFormLayout, QGroupBox, QInputDialog, QLabel, QLineEdit, QListWidget,
+                               QFileDialog, QFormLayout, QGroupBox, QInputDialog, QKeySequenceEdit, QLabel, QLineEdit,
+                               QListWidget,
                                QMessageBox, QPushButton, QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
 
 from ..core import ffmpeg as ff
@@ -10,6 +13,7 @@ from ..core.encode import EncodeSettings
 from ..core.render import AUDIO_RIP_FORMATS
 from ..core.settings import default_presets
 from ..core.util import app_data_dir
+from .system_hooks import DEFAULT_IGNORE, IS_WINDOWS, play_chime
 from .widgets import EncodeForm, hbox, label
 
 
@@ -29,11 +33,47 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._general(), "General")
         tabs.addTab(self._compression(), "Compression")
         tabs.addTab(self._merge(), "Replay merge")
+        tabs.addTab(self._queue(), "Queue")
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Save).setProperty("kind", "primary")
         bb.accepted.connect(self._save)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
+
+    # --------------------------------------------------------------- queue
+    def _queue(self):
+        s = self.s
+        w = QWidget()
+        f = QFormLayout(w)
+        f.setContentsMargins(4, 14, 4, 4)
+        f.setVerticalSpacing(10)
+        f.setHorizontalSpacing(18)
+        self.game_pause = QCheckBox("Pause the queue while a game is full screen (or borderless), "
+                                    "and carry on when you leave it")
+        self.game_pause.setChecked(s.game_pause)
+        self.game_pause.setEnabled(IS_WINDOWS)
+        f.addRow("", self.game_pause)
+        self.game_ignore = QLineEdit(s.game_pause_ignore or DEFAULT_IGNORE)
+        self.game_ignore.setToolTip("Programs that never pause the queue when full screen, separated by commas "
+                                    "(e.g. browsers and video players). Clear it to get the built-in list back.")
+        self.game_ignore.setEnabled(IS_WINDOWS)
+        f.addRow("Never pause for", self.game_ignore)
+        self.hotkey_edit = QKeySequenceEdit(QKeySequence(s.pause_hotkey))
+        self.hotkey_edit.setMaximumSequenceLength(1)
+        self.hotkey_edit.setToolTip("Click, then press the keys. Works in every program, even full screen games.")
+        self.hotkey_edit.setEnabled(IS_WINDOWS)
+        b_none = QPushButton("None")
+        b_none.setToolTip("No global key")
+        b_none.clicked.connect(self.hotkey_edit.clear)
+        f.addRow("Global key to pause / resume", hbox(self.hotkey_edit, b_none, stretch_end=False))
+        self.sounds = QCheckBox("Play a sound when the global key or a game pauses or resumes the queue")
+        self.sounds.setChecked(s.pause_sounds)
+        b_hear = QPushButton("Hear them")
+        b_hear.clicked.connect(lambda: (play_chime("paused"), QTimer.singleShot(450, lambda: play_chime("resumed"))))
+        f.addRow("", hbox(self.sounds, b_hear, stretch_end=False))
+        if not IS_WINDOWS:
+            f.addRow("", label("Game detection and the global key work on Windows only.", "muted"))
+        return w
 
     # ------------------------------------------------------------- general
     def _general(self):
@@ -315,6 +355,11 @@ class SettingsDialog(QDialog):
         s.seamless = self.seamless.isChecked()
         s.timestamp_is_end = bool(self.ts_end.currentData())
         s.ui["packet_matching"] = self.packets.isChecked()
+        s.game_pause = self.game_pause.isChecked()
+        ignore = self.game_ignore.text().strip()
+        s.game_pause_ignore = "" if ignore in ("", DEFAULT_IGNORE) else ignore
+        s.pause_hotkey = self.hotkey_edit.keySequence().toString(QKeySequence.PortableText)
+        s.pause_sounds = self.sounds.isChecked()
         s.save()
         self.accept()
 

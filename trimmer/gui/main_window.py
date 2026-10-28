@@ -22,6 +22,7 @@ from .clips_tab import ClipsTab
 from .merge_tab import PREVIEW_PREFIX, MergeTab
 from .queue_tab import QueueTab
 from .settings_dialog import SettingsDialog, TipsDialog
+from .system_hooks import QueueGuard
 from .widgets import apply_theme, label
 from .worker import Task
 
@@ -93,6 +94,10 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.out_label)
         self._show_output()
         self.show_status("Drop clips or folders anywhere in this window.")
+        self.guard = QueueGuard(self)   # game auto-pause and the global pause key
+        problem = self.guard.apply_settings()
+        if problem:
+            self.show_status(problem)
         self._autosaved = None          # the last autosave written, to skip unchanged ones
         self.autosave_timer = QTimer(self)
         self.autosave_timer.timeout.connect(self.autosave)
@@ -271,6 +276,9 @@ class MainWindow(QMainWindow):
                     w.update()
             self.clips.refresh_from_settings()
             self.merge.refresh_from_settings()
+            problem = self.guard.apply_settings()
+            if problem:
+                QMessageBox.warning(self, "Global pause key", problem)
             self._show_output()
 
     # -------------------------------------------------------------- startup
@@ -458,6 +466,7 @@ class MainWindow(QMainWindow):
             self.queue.closing = True
             clear_queue()
         self.merge.watcher.stop()
+        self.guard.stop()
         # Background look-ups (keyframes, waveform, thumbnails, probes) finish
         # in a moment; a thread destroyed while running can crash on exit.
         for t in self.tasks + self.clips.tasks + self.merge.tasks + list(self.merge.watcher._checking.values()):
