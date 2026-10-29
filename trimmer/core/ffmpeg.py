@@ -37,10 +37,18 @@ def set_ffmpeg_dir(path) -> None:
     _cache.clear()
 
 
+def _beside_app() -> List[Path]:
+    """An "ffmpeg" folder next to Trimmer (or its .exe), with or without a bin
+    folder inside, so a downloaded ffmpeg can just be dropped in."""
+    base = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2]
+    return [base / "ffmpeg" / "bin", base / "ffmpeg"]
+
+
 def _tool(name: str) -> str:
     exe = name + (".exe" if sys.platform == "win32" else "")
-    if _ffmpeg_dir is not None:
-        candidate = _ffmpeg_dir / exe
+    folders = ([_ffmpeg_dir] if _ffmpeg_dir is not None else []) + _beside_app()
+    for folder in folders:
+        candidate = folder / exe
         if candidate.exists():
             return str(candidate)
     return shutil.which(name) or name

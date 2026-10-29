@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QListWidget,
                                QMessageBox, QPushButton, QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
 
-from .. import APP_NAME, AUTHOR, AUTHOR_URL, COPYRIGHT
+from .. import APP_NAME, AUTHOR, AUTHOR_URL, COPYRIGHT, LICENSE_NAME, __version__
 from ..core import ffmpeg as ff
 from ..core import savings
 from ..core.encode import EncodeSettings
@@ -83,7 +83,7 @@ class SettingsDialog(QDialog):
         lay = QVBoxLayout(w)
         lay.setContentsMargins(4, 18, 4, 4)
         lay.setSpacing(8)
-        lay.addWidget(label(APP_NAME, "title"))
+        lay.addWidget(label(f"{APP_NAME} {__version__}", "title"))
         lay.addWidget(label("Trim, merge, compress and rip OBS clips.", "muted"))
         lay.addSpacing(10)
         made = label(f'Created by <b>{AUTHOR}</b>')
@@ -92,6 +92,9 @@ class SettingsDialog(QDialog):
         link.setOpenExternalLinks(True)          # opens in your browser; Trimmer itself stays offline
         lay.addWidget(link)
         lay.addWidget(label(COPYRIGHT, "muted"))
+        lay.addWidget(label(f"Free software under the {LICENSE_NAME} licence, with no warranty. You may share "
+                            "and change it, as long as what you share stays under the same licence.",
+                            "muted", wrap=True))
         lay.addSpacing(10)
         lay.addWidget(label("Video work is done by ffmpeg, and the window by Qt (PySide6).", "muted", wrap=True))
         lay.addStretch(1)

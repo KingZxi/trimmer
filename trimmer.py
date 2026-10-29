@@ -10,7 +10,9 @@ sys.dont_write_bytecode = True      # no __pycache__ folders in the Trimmer fold
 
 from pathlib import Path
 
-ICON = Path(__file__).resolve().parent / "trimmer" / "gui" / "assets" / "trimmer.ico"
+# Packaged builds (PyInstaller) unpack their files to sys._MEIPASS.
+ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+ICON = ROOT / "trimmer" / "gui" / "assets" / "trimmer.ico"
 
 
 def main():
@@ -30,7 +32,9 @@ def main():
         except (AttributeError, OSError):
             pass
     app = QApplication(sys.argv)
+    from trimmer import __version__
     app.setApplicationName("Trimmer")
+    app.setApplicationVersion(__version__)
     if ICON.exists():
         app.setWindowIcon(QIcon(str(ICON)))
     settings = AppSettings.load()

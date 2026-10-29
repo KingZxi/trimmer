@@ -10,3 +10,7 @@ venv/
 Thumbs.db
 .DS_Store
 *.log
+build/
+dist/
+.build-venv/
+packaging/version_info.txt

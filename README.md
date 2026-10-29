@@ -17,7 +17,19 @@ networking code is ever added.
 Created by **KingZxi** ([github.com/KingZxi](https://github.com/KingZxi)).
 © 2026 KingZxi. The same credit is in the app under Settings > About.
 
-## Install (Windows)
+## Download (Windows)
+
+1. Download `Trimmer-<version>-setup.exe` from the Releases page and run it.
+   No admin rights are needed.
+2. Trimmer needs ffmpeg. On first launch it explains how to get it: run
+   `winget install Gyan.FFmpeg`, or download a Windows build from ffmpeg.org
+   and pick its `bin` folder (or put it in a folder named `ffmpeg` next to
+   Trimmer). A "full" build enables the measured auto quality (auto3).
+
+Settings and the queue are kept in `%APPDATA%\Trimmer`, so updating or
+uninstalling leaves them alone.
+
+## Run from source (Windows)
 
 1. Install Python 3.10 or newer.
 2. Install ffmpeg (with ffprobe) and put it on PATH, or set its folder in
@@ -216,6 +228,18 @@ trimmer/gui/            the PySide6 interface (one module per tab, plus widgets)
 tests/                  engine and GUI tests on synthetic clips
 ```
 
+## Building the app and installer
+
+```
+powershell -ExecutionPolicy Bypass -File packaging\build.ps1
+```
+
+This makes `dist\Trimmer\Trimmer.exe` with PyInstaller and, if Inno Setup 6
+is installed (`winget install JRSoftware.InnoSetup`), the installer
+`dist\Trimmer-<version>-setup.exe`. The version comes from
+`trimmer/__init__.py`; bump it and add a line to `CHANGELOG.md` for each
+release.
+
 ## Tests
 
 ```
@@ -245,3 +269,11 @@ Linux, run the GUI tests headless with `QT_QPA_PLATFORM=offscreen`.
   the preview shows still frames grabbed by ffmpeg instead of playing video.
 - The preview uses Qt's built-in player. If a file won't preview, it can
   still be edited and exported.
+
+## Licence
+
+Trimmer is free software under the GNU General Public License v3.0 (see
+`LICENSE`). You may use, share and change it; anything you share that is
+based on it must stay under the same licence and keep the copyright notice.
+Trimmer runs ffmpeg as a separate program and uses Qt for Python (PySide6,
+LGPL-3.0).

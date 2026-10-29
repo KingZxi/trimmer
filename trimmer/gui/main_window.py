@@ -291,11 +291,7 @@ class MainWindow(QMainWindow):
                     shutil.rmtree(old, ignore_errors=True)
             except OSError:
                 pass
-        if ff.ffmpeg_version() == "not found":
-            QMessageBox.warning(
-                self, "ffmpeg not found",
-                "Trimmer needs ffmpeg and ffprobe. Install ffmpeg and add it to PATH, or set its "
-                "folder in Settings → General.")
+        if ff.ffmpeg_version() == "not found" and not self.find_ffmpeg():
             return
 
         def found(enc):
@@ -312,6 +308,39 @@ class MainWindow(QMainWindow):
             self._restore_queue()
         if self.AUTOSAVE_MS:
             self.autosave_timer.start(self.AUTOSAVE_MS)
+
+    FFMPEG_HELP = (
+        "Trimmer does its video work with ffmpeg, a free tool that isn't installed yet.\n\n"
+        "To get it, do one of these:\n"
+        "•  In a terminal, run:  winget install Gyan.FFmpeg  and then restart Trimmer.\n"
+        "•  Download a Windows build of ffmpeg from ffmpeg.org (\"essentials\" or \"full\"), unzip it, "
+        "and either pick its bin folder below or put it in a folder named \"ffmpeg\" next to Trimmer.\n\n"
+        "A \"full\" build also enables the measured auto quality (auto3) with VMAF.")
+
+    def find_ffmpeg(self) -> bool:
+        """First launch without ffmpeg: explain how to get it and let the user
+        pick its folder. True once ffmpeg is found."""
+        while True:
+            box = QMessageBox(QMessageBox.Warning, "ffmpeg is needed", self.FFMPEG_HELP, parent=self)
+            pick = box.addButton("Choose ffmpeg folder…", QMessageBox.AcceptRole)
+            box.addButton("Later", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is not pick:
+                self.show_status("ffmpeg not found: set its folder in Settings → General.")
+                return False
+            folder = QFileDialog.getExistingDirectory(self, "Folder with ffmpeg.exe and ffprobe.exe")
+            if not folder:
+                continue
+            ff.set_ffmpeg_dir(folder)
+            if ff.ffmpeg_version() != "not found" and not ff.tools_available():
+                self.settings.ffmpeg_dir = folder
+                self.settings.save()
+                self.show_status(f"Using ffmpeg from {folder}")
+                return True
+            ff.set_ffmpeg_dir(self.settings.ffmpeg_dir or None)
+            QMessageBox.warning(self, "ffmpeg not found",
+                                "That folder doesn't have both ffmpeg.exe and ffprobe.exe in it. "
+                                "Pick the bin folder inside the unzipped ffmpeg download.")
 
     # ----------------------------------------------------------- save state
     def restore_session(self) -> bool:

@@ -194,3 +194,34 @@ def test_about_tab_credits_the_author():
     assert tabs.tabText(tabs.count() - 1) == "About"
     text = " ".join(l.text() for l in about.findChildren(QLabel))
     assert "KingZxi" in text and "https://github.com/KingZxi" in text
+
+
+def test_ffmpeg_found_in_a_folder_beside_the_app(tmp_path, monkeypatch):
+    from trimmer.core import ffmpeg as ff
+    exe = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+    (tmp_path / "ffmpeg" / "bin").mkdir(parents=True)
+    (tmp_path / "ffmpeg" / "bin" / exe).write_bytes(b"")
+    monkeypatch.setattr(ff, "_beside_app", lambda: [tmp_path / "ffmpeg" / "bin", tmp_path / "ffmpeg"])
+    assert ff.ffmpeg_bin() == str(tmp_path / "ffmpeg" / "bin" / exe)
+
+
+def test_first_launch_without_ffmpeg_explains_and_lets_you_pick(monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    from trimmer.gui import main_window as mw
+    shown = []
+
+    def fake_exec(box):
+        shown.append(box.text())
+        box.buttons()[-1].click()            # "Later"
+    monkeypatch.setattr(QMessageBox, "exec", fake_exec)
+    w = mw.MainWindow(AppSettings())
+    assert w.find_ffmpeg() is False
+    assert "winget install Gyan.FFmpeg" in shown[0]
+    w.close()
+
+
+def test_version_and_licence():
+    import trimmer
+    assert trimmer.__version__.count(".") == 2 and trimmer.LICENSE_NAME == "GPL-3.0"
+    text = (ROOT / "LICENSE").read_text(encoding="utf-8")
+    assert "Version 3, 29 June 2007" in text and "END OF TERMS AND CONDITIONS" in text
