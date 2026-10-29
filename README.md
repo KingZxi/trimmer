@@ -12,6 +12,11 @@ telemetry, no update checks and no online services. All the work is done by
 ffmpeg on your own PC. A test (`test_no_network_code`) fails if any
 networking code is ever added.
 
+## Author
+
+Created by **KingZxi** ([github.com/KingZxi](https://github.com/KingZxi)).
+© 2026 KingZxi. The same credit is in the app under Settings > About.
+
 ## Install (Windows)
 
 1. Install Python 3.10 or newer.

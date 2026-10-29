@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QListWidget,
                                QMessageBox, QPushButton, QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
 
+from .. import APP_NAME, AUTHOR, AUTHOR_URL, COPYRIGHT
 from ..core import ffmpeg as ff
 from ..core import savings
 from ..core.encode import EncodeSettings
@@ -34,6 +35,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._compression(), "Compression")
         tabs.addTab(self._merge(), "Replay merge")
         tabs.addTab(self._queue(), "Queue")
+        tabs.addTab(self._about(), "About")
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Save).setProperty("kind", "primary")
         bb.accepted.connect(self._save)
@@ -73,6 +75,26 @@ class SettingsDialog(QDialog):
         f.addRow("", hbox(self.sounds, b_hear, stretch_end=False))
         if not IS_WINDOWS:
             f.addRow("", label("Game detection and the global key work on Windows only.", "muted"))
+        return w
+
+    # --------------------------------------------------------------- about
+    def _about(self):
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(4, 18, 4, 4)
+        lay.setSpacing(8)
+        lay.addWidget(label(APP_NAME, "title"))
+        lay.addWidget(label("Trim, merge, compress and rip OBS clips.", "muted"))
+        lay.addSpacing(10)
+        made = label(f'Created by <b>{AUTHOR}</b>')
+        lay.addWidget(made)
+        link = label(f'<a href="{AUTHOR_URL}">GitHub: {AUTHOR}</a>')
+        link.setOpenExternalLinks(True)          # opens in your browser; Trimmer itself stays offline
+        lay.addWidget(link)
+        lay.addWidget(label(COPYRIGHT, "muted"))
+        lay.addSpacing(10)
+        lay.addWidget(label("Video work is done by ffmpeg, and the window by Qt (PySide6).", "muted", wrap=True))
+        lay.addStretch(1)
         return w
 
     # ------------------------------------------------------------- general

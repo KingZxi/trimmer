@@ -183,3 +183,14 @@ def test_settings_dialog_saves_queue_options():
     back = AppSettings.load()
     assert back.game_pause and back.pause_hotkey == "Ctrl+Shift+F9" and not back.pause_sounds
     assert back.game_pause_ignore == ""          # unchanged list follows the built-in one
+
+
+def test_about_tab_credits_the_author():
+    from PySide6.QtWidgets import QLabel, QTabWidget
+    from trimmer.gui.settings_dialog import SettingsDialog
+    d = SettingsDialog(AppSettings(), ["software"])
+    tabs = d.findChild(QTabWidget)
+    about = tabs.widget(tabs.count() - 1)
+    assert tabs.tabText(tabs.count() - 1) == "About"
+    text = " ".join(l.text() for l in about.findChildren(QLabel))
+    assert "KingZxi" in text and "https://github.com/KingZxi" in text
