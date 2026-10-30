@@ -771,6 +771,30 @@ def test_rips_without_a_video_keep_the_exact_marks(work):
     assert abs(ff.probe(rip, use_cache=False).duration - 6.5) < 0.05
 
 
+def _first_audio_pts(path: Path) -> float:
+    out = ff.run_quiet([ff.ffprobe_bin(), "-v", "error", "-select_streams", "a:0", "-show_entries",
+                        "packet=pts_time", "-of", "csv=p=0", "-read_intervals", "%+#1", str(path)])
+    return float(out.stdout.split()[0].strip(","))
+
+
+def test_compressed_trim_and_rip_have_no_audio_before_the_cut(work):
+    """A trim starting mid-GOP with the audio copied: the packets the demuxer
+    reads from the keyframe before the cut must not be kept (hidden behind an
+    edit list, players that ignore it played the audio that much late)."""
+    src = fx.single_clip(work / "single")
+    out = fresh(work, "out_preroll")
+    c, logs = ctx()
+    r = run_job(ClipJob(str(src), segments=[(5.5, None)], compress=True, rip_audio_tracks=[0],
+                        encode=EncodeSettings(codec="h264", quality=30, preset="ultrafast").to_dict(),
+                        options=opts(out)), c)
+    assert r.status == "done", logs
+    video = next(out.glob("*.mp4"))
+    rip = next(out.glob("*.m4a"))
+    for f in (video, rip):
+        assert _first_audio_pts(f) >= 0.0, f.name
+    assert _rip_offset(video, rip, 0) == 0.0
+
+
 def test_skipped_output_keeps_the_original(work):
     d = fresh(work, "skip_keep")
     src = d / "clip.mp4"

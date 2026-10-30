@@ -197,6 +197,16 @@ def _audio_codec_args(encode: EncodeSettings, meta, container: str) -> List[str]
     return ["-c:a", "aac", "-b:a", "256k"]
 
 
+def _drop_preroll(span: Span) -> List[str]:
+    """Output options for a stream-copied track of an input seeked with -ss.
+    The demuxer lands before the seek point (on the video keyframe), and a
+    copied track keeps those earlier packets with negative timestamps,
+    hidden behind an MP4 edit list. Players that ignore the edit list then
+    play that audio late by up to a keyframe interval. Dropping everything
+    before 0 makes the copied audio start at the cut, like the picture."""
+    return ["-ss", "0", "-copypriorss", "0"] if span.start > 0.0005 else []
+
+
 def _encode_inputs_and_filters(spans: List[Span], encode: EncodeSettings, audio: AudioPlan,
                                include_video: bool, normalize_audio: bool):
     """Inputs are seeked with -ss/-t per span (fast and frame-accurate when
@@ -222,6 +232,7 @@ def _encode_inputs_and_filters(spans: List[Span], encode: EncodeSettings, audio:
     simple = len(spans) == 1 and not audio.needs_filter and not normalize_audio
     if simple:
         maps = (["-map", "0:v:0"] if video else []) + sum((["-map", f"0:a:{t}"] for t in selected), [])
+        maps += _drop_preroll(spans[0])
         return args, {"maps": maps, "vf": vf, "out_tracks": selected, "audio_filtered": False,
                       "src_codecs": [first.audio[t].codec for t in selected]}
 
@@ -441,7 +452,7 @@ def rip_audio(spans: List[Span], track: int, fmt: str, out_base: Path,
         graph = "".join(f"[{i}:a:{track}]" for i in range(len(spans))) + f"concat=n={len(spans)}:v=0:a=1[a]"
         args = inputs + ["-filter_complex", graph, "-map", "[a]"]
     else:
-        args = inputs + ["-map", f"0:a:{track}"]
+        args = inputs + ["-map", f"0:a:{track}"] + _drop_preroll(spans[0])
     args += ["-vn"] + codec + ["-map_metadata", "-1"] + tag_args(tag)
     if tr.title:
         args += ["-metadata", f"title={tr.title}"]

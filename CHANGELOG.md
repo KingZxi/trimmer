@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1 (unreleased)
+
+- Fixed: compressed trims that start partway into a clip (including the second part of a split)
+  and "Original" audio rips of them could play with the audio late in some players. The copied
+  audio kept up to a keyframe interval of sound from before the cut.
+
 ## 1.0.0 (2026-10-29)
 
 First public release.
