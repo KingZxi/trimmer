@@ -112,3 +112,30 @@ def sync_clip(folder: Path, ext=".mp4", seconds=24) -> Path:
         "-c:a", "aac", "-b:a", "128k",
         "-metadata:s:a:0", "handler_name=Mic", "-metadata:s:a:1", "handler_name=Desktop", str(p))
     return p
+
+
+def sync_replays(folder: Path):
+    """Replays at 0-20, 12-32 and 28-48 of one session, each encoded on its
+    own (so only the sound can line them up), with a flash and a beep at
+    every odd second over noise. Their audio runs on a little past the
+    picture, as OBS's does."""
+    folder.mkdir(parents=True, exist_ok=True)
+    m = folder / "sync master.mkv"
+    if not m.exists():
+        flash = "lt(mod(t-1,2),0.0167)*gte(t,1)"
+        beep = "if(gte(t\\,1)*lt(mod(t-1\\,2)\\,0.05),0.8*sin(2*PI*1000*t),0)"
+        run("-f", "lavfi", "-i", f"testsrc2=s=320x180:r=60:d=50,drawbox=c=white:t=fill:enable='{flash}'",
+            "-f", "lavfi", "-i", f"aevalsrc='{beep}':s=48000:d=50",
+            "-f", "lavfi", "-i", "anoisesrc=d=50:c=pink:r=48000:a=0.1:seed=3",
+            "-filter_complex", "[1:a][2:a]amix=inputs=2:normalize=0[a]", "-map", "0:v", "-map", "[a]",
+            "-c:v", "libx264", "-qp", "0", "-preset", "ultrafast", "-c:a", "flac", str(m))
+    paths = []
+    for s, e in ((0, 20), (12, 32), (28, 48)):
+        p = folder / replay_name(s)
+        if not p.exists():
+            run("-ss", str(s), "-i", str(m), "-t", str(e - s), "-map", "0:v", "-map", "0:a", "-map", "0:a",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-g", "120", "-bf", "2",
+                "-x264-params", "scenecut=0", "-c:a", "aac", "-b:a", "128k", "-af", "apad=pad_dur=0.04",
+                "-metadata:s:a:0", "handler_name=Mic", "-metadata:s:a:1", "handler_name=Desktop", str(p))
+        paths.append(p)
+    return paths

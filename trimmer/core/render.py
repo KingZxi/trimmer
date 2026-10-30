@@ -132,6 +132,21 @@ def _audio_packets(path: Path) -> List[tuple]:
     return sorted(rows)
 
 
+def _video_end(path: Path) -> Optional[float]:
+    """When the last picture of a file ends (packet time), None without video."""
+    out = ff.run_quiet([ff.ffprobe_bin(), "-v", "error", "-select_streams", "v:0", "-show_entries",
+                        "packet=pts_time,duration_time", "-of", "csv=p=0", str(path)])
+    end = None
+    for line in out.stdout.splitlines():
+        parts = line.strip().strip(",").split(",")
+        try:
+            t = float(parts[0]) + float(parts[1])
+        except (ValueError, IndexError):
+            continue
+        end = t if end is None else max(end, t)
+    return end
+
+
 def cut_audio_copy(ranges: List[tuple], tmpdir: Path, cancel: CancelToken = None) -> Path:
     """All audio tracks over the ranges (file, start, stop) [start, stop)
     (stop None = to the end), joined end to end without re-encoding.
@@ -147,19 +162,27 @@ def cut_audio_copy(ranges: List[tuple], tmpdir: Path, cancel: CancelToken = None
     lines = ["ffconcat version 1.0"]
     drift = 0.0                       # audio written minus picture written so far
     for i, (src, start, stop) in enumerate(ranges):
+        if stop is None and i < len(ranges) - 1:
+            # A part running to the end of its file (a merge) is followed by
+            # another, so its sound has to stop with its picture too, or the
+            # difference carries on into every later part.
+            stop = _video_end(src)
         if src not in cache:
             cache[src] = _audio_packets(src)
         packets = cache[src]
         if not packets:
             raise ff.FFmpegError(f"couldn't read the audio packets of {Path(src).name}")
         durs = sorted(d for _, d in packets if d > 0)
-        half = (durs[len(durs) // 2] if durs else 0.021) / 2
+        frame = durs[len(durs) // 2] if durs else 0.021
+        half = frame / 2
         lo = start + drift - half
         hi = float("inf") if stop is None else stop + drift - half
         sel = [(t, d) for t, d in packets if lo <= t < hi]
         if not sel:
             raise ff.FFmpegError(f"no audio found between {start:.2f}s and {stop:.2f}s")
-        first, last = sel[0][0], sel[-1][0] + sel[-1][1]
+        # Every packet is played in full once joined: a file's last packet
+        # is often marked shorter, but that only holds at the very end.
+        first, last = sel[0][0], sel[-1][0] + frame
         if stop is not None:
             drift += (last - first) - (stop - start)
         piece = tmpdir / f"audio{i}.mka"

@@ -858,6 +858,20 @@ def test_parts_stay_in_sync_at_every_join(work, ext, kind):
     assert max(abs(e) for e in errs) < 0.012, errs
 
 
+def test_lossless_fallback_merge_stays_in_sync(work):
+    """Replays encoded separately, joined without re-encoding: each part runs
+    to the end of its file, and the sound must still not drift at the joins
+    (a file's last audio packet is marked short, but is played in full)."""
+    clips = fx.sync_replays(work / "sync_replays")
+    out = fresh(work, "out_sync_merge")
+    c, logs = ctx()
+    r = run_job(MergeJob([str(p) for p in clips], options=opts(out, merge_method="lossless")), c)
+    assert r.status == "done", logs
+    errs = _sync_errors(next(out.glob("Merged*.mp4")))
+    assert len(errs) >= 40, errs
+    assert max(abs(e) for e in errs) < 0.012, errs
+
+
 def test_volume_and_mix_without_compressing(work):
     src = fx.sync_clip(work / "sync", ".mp4")
     for name, kw in (("vol", dict(volumes={"1": 0.5})), ("mix", dict(mix_tracks=[0, 1]))):

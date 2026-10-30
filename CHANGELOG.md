@@ -13,6 +13,8 @@
   always fell back to re-encoding (and could start a frame early).
 - Fixed: changing a track's volume without compressing failed.
 - Fixed: the mixed audio track was 5 ms late (the limiter's delay).
+- Fixed: Replay merges joined without re-encoding from replays that don't share packets let the
+  sound fall 10-20 ms further behind at each join (each replay's last audio packet is played in full).
 
 ## 1.0.0 (2026-10-29)
 
