@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.1 (unreleased)
+## 1.1.0 (2026-10-30)
 
 - New: "10-bit colour" option for H.265 and AV1 compression: about 5-10% smaller at the same
   quality, with less banding. Off by default. Hardware encoders are checked before use, and file
