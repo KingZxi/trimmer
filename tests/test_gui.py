@@ -1393,3 +1393,37 @@ def test_changing_settings_mid_analysis_starts_over():
     assert q.b_start.isEnabled(), [(i.status, i.ready, i.job.title) for i in q.items] + [q.is_running()]
     q.remove_selected([item])
     w.close()
+
+
+def test_queue_menu_edit_custom_compression(monkeypatch):
+    """Right-click > Compression > Custom, edit first…: the dialog starts from
+    the job's own compression, saves as Custom and applies it."""
+    from trimmer.core.encode import EncodeSettings
+    from trimmer.core.jobs import ClipJob, JobOptions as JO
+    from trimmer.gui import clips_tab
+    src = fx.single_clip(WORK / "src_qedit")
+    w = window(WORK / "out_qedit")
+    q = w.queue
+    q.auto_start.setChecked(False)
+    mine = EncodeSettings(codec="h264", quality=27, preset="ultrafast").to_dict()
+    q.add_jobs([ClipJob(str(src), compress=True, encode=mine, options=JO(output_dir=str(WORK / "out_qedit")))],
+               start=False)
+    item = q.items[-1]
+    seen = {}
+
+    def fake_exec(dlg):
+        seen["start"] = dlg.form.settings()
+        dlg.form.set_settings(EncodeSettings(codec="h265", quality=30, preset="fast", ten_bit=True))
+        return True
+    monkeypatch.setattr(clips_tab.CustomEncodeDialog, "exec", fake_exec)
+    q.edit_compression([item])
+    assert (seen["start"].codec, seen["start"].quality) == ("h264", 27)
+    e = EncodeSettings.from_dict(item.job.encode)
+    assert (e.codec, e.quality, e.preset, e.ten_bit) == ("h265", 30, "fast", True) and item.job.compress
+    assert w.settings.encode_settings().quality == 30
+    assert "H.265 10-bit CRF30" in q.table.item(q.items.index(item), 2).text()
+    monkeypatch.setattr(clips_tab.CustomEncodeDialog, "exec", lambda dlg: False)   # Cancel changes nothing
+    q.edit_compression([item])
+    assert EncodeSettings.from_dict(item.job.encode).quality == 30
+    q.remove_selected([item])
+    w.close()

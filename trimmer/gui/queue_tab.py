@@ -20,6 +20,7 @@ from ..core import savings
 from ..core.encode import CODECS, EncodeSettings, predict_size, resolve_quality
 from ..core.journal import save_queue
 from ..core.util import format_hms, format_size, logs_dir, sanitize_filename
+from .clips_tab import CustomEncodeDialog
 from .theme import set_kind
 from .widgets import HintTable, hbox, label, show_in_folder
 from .worker import QueueItem, QueueRunner, Task
@@ -801,6 +802,27 @@ class QueueTab(QWidget):
         self._edited(items)
         self._reestimate(items)
 
+    def edit_compression(self, items):
+        """Edit the Custom settings (starting from the first job's own
+        compression, if it has any), then give them to these jobs."""
+        items = self._waiting(items)
+        if not items:
+            return
+        first = items[0].job
+        start = (replace(EncodeSettings.from_dict(first.encode), chosen={}, method="")
+                 if first.compress and first.encode else self.main.settings.encode_settings())
+        dlg = CustomEncodeDialog(start, self.main.encoders, self)
+        if not dlg.exec():
+            return
+        enc = dlg.form.settings()
+        problems = enc.problems()
+        if problems:
+            QMessageBox.warning(self, "Compression settings", "\n".join(problems))
+            return
+        self.main.settings.encode = enc.to_dict()
+        self.main.settings.save()
+        self.set_compression(items, "")
+
     def set_delete(self, items, on):
         items = self._waiting(items)
         if on and items and not self._confirm_delete(len(items)):
@@ -908,6 +930,7 @@ class QueueTab(QWidget):
             comp = m.addMenu("Compression")
             comp.addAction("No compression", lambda: self.set_compression(waiting, None))
             comp.addAction("Custom (Settings)", lambda: self.set_compression(waiting, ""))
+            comp.addAction("Custom, edit first…", lambda: self.edit_compression(waiting))
             comp.addSeparator()
             for name in self.main.settings.presets:
                 comp.addAction(name, lambda n=name: self.set_compression(waiting, n))
