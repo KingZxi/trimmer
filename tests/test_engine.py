@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from typing import List
 
 import pytest
 
@@ -793,6 +794,91 @@ def test_compressed_trim_and_rip_have_no_audio_before_the_cut(work):
     for f in (video, rip):
         assert _first_audio_pts(f) >= 0.0, f.name
     assert _rip_offset(video, rip, 0) == 0.0
+
+
+def _flash_times(path: Path) -> List[float]:
+    out = ff.run_quiet([ff.ffmpeg_bin(), "-v", "error", "-copyts", "-i", str(path), "-map", "0:v:0", "-vf",
+                        "signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-", "-f", "null", "-"])
+    times, cur = [], None
+    for line in out.stdout.splitlines():
+        if line.startswith("frame:"):
+            cur = float(line.split("pts_time:")[1])
+        elif "YAVG" in line and float(line.split("=")[1]) > 200 and (not times or cur - times[-1] > 0.5):
+            times.append(cur)
+    return times
+
+
+def _beep_times(path: Path, track: int) -> List[float]:
+    import numpy as np
+    raw = ff.run_bytes([ff.ffmpeg_bin(), "-v", "error", "-i", str(path), "-map", f"0:a:{track}",
+                              "-f", "f32le", "-ac", "1", "-ar", "48000", "-"]).stdout
+    start = float(ff.run_quiet([ff.ffprobe_bin(), "-v", "error", "-select_streams", f"a:{track}",
+                                "-show_entries", "stream=start_time", "-of", "csv=p=0",
+                                str(path)]).stdout.split()[0].strip(","))
+    loud = np.where(np.abs(np.frombuffer(raw, np.float32)) > 0.3)[0]
+    times, last = [], -10 ** 9
+    for k in loud:
+        if k - last > 24000:
+            times.append(k / 48000 + start)
+        last = k
+    return times
+
+
+def _sync_errors(path: Path) -> List[float]:
+    """Seconds each beep lands after its flash, for every beep on every track
+    (beeps cut in half at the very start are left out)."""
+    flashes, errs = _flash_times(path), []
+    assert flashes, path.name
+    for t in range(len(ff.probe(path, use_cache=False).audio)):
+        for b in _beep_times(path, t):
+            near = min(flashes, key=lambda f: abs(f - b))
+            if abs(near - b) < 0.5 and near > flashes[0] + 0.1:     # not one cut in half at the start
+                errs.append(b - near)
+    return errs
+
+
+@pytest.mark.parametrize("ext", [".mp4", ".mkv"])
+@pytest.mark.parametrize("kind", ["copy", "smart", "encode"])
+def test_parts_stay_in_sync_at_every_join(work, ext, kind):
+    """Three parts, kept by copy, smart cut or re-encode, from MP4 and MKV:
+    the sound stays within half an audio packet of the picture in every part
+    (it used to drift further at each join, and MKV copies failed)."""
+    src = fx.sync_clip(work / "sync", ext)
+    out = fresh(work, f"out_sync_{kind}{ext}")
+    c, logs = ctx()
+    job = ClipJob(str(src), segments=[(2.5, 6.2), (8.3, 12.9), (15.7, 21.1)],
+                  options=opts(out, exact_cuts=kind == "smart"), compress=kind == "encode",
+                  encode=EncodeSettings(codec="h264", quality=18, preset="ultrafast").to_dict())
+    r = run_job(job, c)
+    assert r.status == "done", logs
+    assert not any("instead" in line for line in logs), logs      # smart cut didn't fall back
+    f = next(out.glob(f"*{ext}"))
+    errs = _sync_errors(f)
+    assert len(errs) >= 12, errs
+    assert max(abs(e) for e in errs) < 0.012, errs
+
+
+def test_volume_and_mix_without_compressing(work):
+    src = fx.sync_clip(work / "sync", ".mp4")
+    for name, kw in (("vol", dict(volumes={"1": 0.5})), ("mix", dict(mix_tracks=[0, 1]))):
+        out = fresh(work, f"out_copy_{name}")
+        c, logs = ctx()
+        r = run_job(ClipJob(str(src), segments=[(9.3, None)], options=opts(out), **kw), c)
+        assert r.status == "done", logs
+        errs = _sync_errors(next(out.glob("*.mp4")))
+        assert errs and max(abs(e) for e in errs) < 0.012, (name, errs)
+
+
+def test_mixed_track_is_not_delayed(work):
+    src = fx.sync_clip(work / "sync", ".mp4")
+    out = fresh(work, "out_mix_delay")
+    c, logs = ctx()
+    r = run_job(ClipJob(str(src), segments=[(9.3, None)], mix_tracks=[0, 1], compress=True,
+                        encode=EncodeSettings(codec="h264", quality=18, preset="ultrafast").to_dict(),
+                        options=opts(out)), c)
+    assert r.status == "done", logs
+    errs = _sync_errors(next(out.glob("*.mp4")))
+    assert errs and max(abs(e) for e in errs) < 0.003, errs
 
 
 def test_skipped_output_keeps_the_original(work):

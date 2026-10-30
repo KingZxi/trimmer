@@ -5,6 +5,14 @@
 - Fixed: compressed trims that start partway into a clip (including the second part of a split)
   and "Original" audio rips of them could play with the audio late in some players. The copied
   audio kept up to a keyframe interval of sound from before the cut.
+- Fixed: trims kept without re-encoding with several parts (and plain Replay merges that fall
+  back to joining files) let the audio fall further behind at each join. Each part's audio is
+  now cut so it stays within half an audio packet (about 11 ms) of the picture.
+- Fixed: smart cut audio could be up to 17 ms early in each part.
+- Fixed: trims without re-encoding from MKV files failed their check, and smart cut on MKV
+  always fell back to re-encoding (and could start a frame early).
+- Fixed: changing a track's volume without compressing failed.
+- Fixed: the mixed audio track was 5 ms late (the limiter's delay).
 
 ## 1.0.0 (2026-10-29)
 

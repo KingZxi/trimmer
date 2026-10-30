@@ -91,3 +91,24 @@ def single_clip(folder: Path, seconds=20) -> Path:
     run("-ss", "10", "-i", str(src), "-t", str(seconds), "-map", "0", "-c", "copy",
         "-avoid_negative_ts", "make_zero", str(p))
     return p
+
+
+def sync_clip(folder: Path, ext=".mp4", seconds=24) -> Path:
+    """A white frame and a beep on both audio tracks at every odd second, so
+    sound and picture can be lined up in any output. H.264 with B-frames and
+    a 2 s keyframe interval, like an OBS replay."""
+    folder.mkdir(parents=True, exist_ok=True)
+    p = folder / f"Sync clip{ext}"
+    if p.exists():
+        return p
+    flash = "gte(t,1)*lt(mod(t-1,2),0.0167)"
+    beep = "if(gte(t\\,1)*lt(mod(t-1\\,2)\\,0.05),0.8*sin(2*PI*{f}*t),0.05*sin(2*PI*{b}*t))"
+    run("-f", "lavfi", "-i", f"testsrc2=s=320x180:r=60:d={seconds},"
+                             f"drawbox=c=white:t=fill:enable='{flash}'",
+        "-f", "lavfi", "-i", f"aevalsrc='{beep.format(f=1000, b=300)}':s=48000:d={seconds}",
+        "-f", "lavfi", "-i", f"aevalsrc='{beep.format(f=500, b=200)}':s=48000:d={seconds}",
+        "-map", "0", "-map", "1", "-map", "2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+        "-g", "120", "-bf", "2", "-x264-params", "scenecut=0", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k",
+        "-metadata:s:a:0", "handler_name=Mic", "-metadata:s:a:1", "handler_name=Desktop", str(p))
+    return p

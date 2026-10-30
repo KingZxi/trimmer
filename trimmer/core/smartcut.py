@@ -11,7 +11,8 @@ How the pieces fit together:
   OBS's settings at the keyframe where the copied part begins.
 - For H.264 the head uses a different SPS/PPS id, so the two sets never
   overwrite each other.
-- Audio is cut packet by packet (no re-encode) and joined separately.
+- Audio is cut packet by packet (no re-encode) and joined separately,
+  kept within half a packet of the picture at every join.
 
 Every result is checked by decoding across each seam and comparing the
 pictures with the source. If anything differs (an encoder OBS used that
@@ -27,7 +28,7 @@ from typing import Callable, List, Optional
 
 from . import ffmpeg as ff
 from .ffmpeg import CancelToken, FFmpegError, Progress, RunResult
-from .render import AudioPlan, Span, _container_args, _track_meta_args, copy_audio_maps
+from .render import AudioPlan, Span, _container_args, _track_meta_args, copy_audio_maps, cut_audio_copy
 from .util import safe_unlink
 
 SUPPORTED = {"h264": "libx264", "hevc": "libx265"}
@@ -145,7 +146,10 @@ def plan_span(span: Span) -> List[Piece]:
     keyframe, an untouched copy from there to the last keyframe before the
     end, and re-encoded frames from that keyframe to the end. A span that
     starts or ends on a keyframe (or the end of the file) skips that part."""
-    s, stop = span.start, span.stop
+    # Packet times are the file's own; the span's times count from its start
+    # (they differ when a stream starts before 0, e.g. audio in an OBS MKV).
+    off = span.info.start_time
+    s, stop = span.start + off, span.stop + off
     to_eof = span.end is None
     rows = _packets(span.path, s, None if to_eof else stop)
     frames = [t for t, _ in rows if s - EPS <= t and (to_eof or t < stop - EPS)]
@@ -192,7 +196,8 @@ def _contains(hay: List[str], needle: List[str]) -> bool:
     return any(hay[i:i + n] == needle for i in range(len(hay) - n + 1))
 
 
-def verify_seams(out: Path, src: Path, seams: List[tuple], cancel: CancelToken = None) -> Optional[str]:
+def verify_seams(out: Path, src: Path, seams: List[tuple], cancel: CancelToken = None,
+                 src_start: float = 0.0) -> Optional[str]:
     """seams: (output time, source time, "in" | "out"). "in" is where copied
     footage starts after re-encoded frames, "out" where it ends before
     them. Decodes the output across each seam and checks the copied side
@@ -204,12 +209,12 @@ def verify_seams(out: Path, src: Path, seams: List[tuple], cancel: CancelToken =
             # short and starts on its own keyframe).
             got = _framemd5(["-ss", f"{max(0.0, out_t[0]):.6f}", "-i", str(out),
                              "-t", f"{out_t[1] + w + 0.5:.6f}"], cancel)
-            want = _framemd5(["-ss", f"{src_t:.6f}", "-i", str(src), "-t", f"{w:.6f}"], cancel)
+            want = _framemd5(["-ss", f"{src_t - src_start:.6f}", "-i", str(src), "-t", f"{w:.6f}"], cancel)
             want = want[:-2] if len(want) > 4 else want     # rounding at the window's end
         else:
             got = _framemd5(["-ss", f"{max(0.0, out_t - w - 0.5):.6f}", "-i", str(out),
                              "-t", f"{w + 1.5:.6f}"], cancel)
-            want = _framemd5(["-ss", f"{max(0.0, src_t - w):.6f}", "-i", str(src),
+            want = _framemd5(["-ss", f"{max(0.0, src_t - w - src_start):.6f}", "-i", str(src),
                               "-t", f"{w:.6f}"], cancel)
             want = want[2:-1] if len(want) > 4 else want
         if not want or not _contains(got, want):
@@ -258,7 +263,7 @@ def smart_render(spans: List[Span], out_path: Path, audio: AudioPlan, *, mixed_l
 
     with tempfile.TemporaryDirectory(prefix="trimmer_smart_") as td:
         td = Path(td)
-        vlist, alist = ["ffconcat version 1.0"], ["ffconcat version 1.0"]
+        vlist = ["ffconcat version 1.0"]
         seams, out_t, done, idx, n_frames = [], 0.0, 0.0, 0, 0
         selected = audio.selected(len(info.audio))
         for span, plan in zip(spans, plans):
@@ -268,12 +273,19 @@ def smart_render(spans: List[Span], out_path: Path, audio: AudioPlan, *, mixed_l
                 piece = td / f"v{idx}.ts"
                 length = max(0.0, p.end - p.start)
                 # Re-encoding: seek a hair before the first frame so rounding can't
-                # skip it. Copying: seek to the keyframe itself (a copy starts on
-                # the keyframe at or before the seek point).
-                at = p.start - 0.0005 if p.kind == "encode" else p.start
-                seek = ["-ss", f"{at:.6f}"] if p.start > 0.0005 else []
-                args = seek + ["-i", str(src), "-map", "0:v:0", "-frames:v", str(p.frames),
-                               "-an", "-sn", "-dn"]
+                # skip it. Copying: start on the keyframe itself through a concat
+                # in-point (an input -ss can land a keyframe early: in MKV with
+                # B-frames ffmpeg seeks ~0.13 s before the time given).
+                if p.kind == "encode" or p.start - info.start_time <= 0.0005:
+                    at = p.start - info.start_time      # -ss counts from the file's start
+                    seek = ["-ss", f"{at - 0.0005:.6f}"] if at > 0.0005 else []
+                    inp = seek + ["-i", str(src)]
+                else:
+                    lst = td / f"in{idx}.ffconcat"
+                    lst.write_text(f"ffconcat version 1.0\nfile '{Path(src).resolve().as_posix()}'\n"
+                                   f"inpoint {p.start:.6f}\n", encoding="utf-8")
+                    inp = ["-f", "concat", "-safe", "0", "-i", str(lst)]
+                args = inp + ["-map", "0:v:0", "-frames:v", str(p.frames), "-an", "-sn", "-dn"]
                 if p.kind == "encode":
                     args += ["-fps_mode", "passthrough"] + head_codec_args(props)
                 else:
@@ -291,28 +303,22 @@ def smart_render(spans: List[Span], out_path: Path, audio: AudioPlan, *, mixed_l
                 done += length
                 n_frames += p.frames
                 prev = p
-            if selected:
-                apiece = td / f"a{idx}.mka"
-                coarse = max(0.0, span.start - 10.0)
-                args = (["-ss", f"{coarse:.6f}"] if coarse > 0 else []) + ["-i", str(src)]
-                args += ["-ss", f"{span.start - coarse:.6f}"]
-                if span.end is not None:
-                    args += ["-t", f"{span.length:.6f}"]
-                args += ["-map", "0:a"]
-                args += ["-c:a", "copy", "-vn", "-y", str(apiece)]
-                r = ff.run_ffmpeg(args, span.length, None, cancel, output_path=apiece)
-                if not r.ok:
-                    raise SmartCutError(f"cutting the audio failed: {r.stderr_tail[-300:]}")
-                alist.append(f"file '{apiece.as_posix()}'")
 
         (td / "video.ffconcat").write_text("\n".join(vlist) + "\n", encoding="utf-8")
+        if selected:
+            # Each part's audio is copied from where its first frame is, cut
+            # so the sound never drifts from the picture across the joins.
+            try:
+                alist = cut_audio_copy([(src, pl[0].start, None if s.end is None else pl[-1].end)
+                                        for s, pl in zip(spans, plans)], td, cancel)
+            except FFmpegError as e:
+                raise SmartCutError(str(e)[-300:])
         args = ["-f", "concat", "-safe", "0", "-i", str(td / "video.ffconcat")]
         out_tracks: List[Optional[int]] = []
         maps = ["-map", "0:v:0"]
         codec = ["-c:v", "copy"]
         if selected:
-            (td / "audio.ffconcat").write_text("\n".join(alist) + "\n", encoding="utf-8")
-            args += ["-f", "concat", "-safe", "0", "-i", str(td / "audio.ffconcat")]
+            args += ["-f", "concat", "-safe", "0", "-i", str(alist)]
             fparts, amaps, out_tracks, acodec = copy_audio_maps(info, audio, selected, container,
                                                                 input_index=1)
             maps += amaps
@@ -329,7 +335,7 @@ def smart_render(spans: List[Span], out_path: Path, audio: AudioPlan, *, mixed_l
 
     got = count_frames(out_path)
     problem = (None if got == n_frames else f"the output has {got} frames, {n_frames} were expected") \
-        or verify_seams(out_path, src, seams, cancel)
+        or verify_seams(out_path, src, seams, cancel, info.start_time)
     if problem:
         safe_unlink(out_path)
         raise SmartCutError(problem)

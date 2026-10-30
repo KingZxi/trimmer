@@ -118,6 +118,67 @@ def _ffconcat(spans: List[Span], tmpdir: Path, with_outpoint: bool = True) -> Pa
     return path
 
 
+def _audio_packets(path: Path) -> List[tuple]:
+    """(pts, duration) of the first audio stream's packets, by time."""
+    out = ff.run_quiet([ff.ffprobe_bin(), "-v", "error", "-select_streams", "a:0", "-show_entries",
+                        "packet=pts_time,duration_time", "-of", "csv=p=0", str(path)])
+    rows = []
+    for line in out.stdout.splitlines():
+        parts = line.strip().strip(",").split(",")
+        try:
+            rows.append((float(parts[0]), float(parts[1])))
+        except (ValueError, IndexError):
+            pass
+    return sorted(rows)
+
+
+def cut_audio_copy(ranges: List[tuple], tmpdir: Path, cancel: CancelToken = None) -> Path:
+    """All audio tracks over the ranges (file, start, stop) [start, stop)
+    (stop None = to the end), joined end to end without re-encoding.
+    Returns an ffconcat list of the pieces.
+
+    Copied audio can only be cut between packets (about 21 ms for AAC), so
+    each part's audio is a little longer or shorter than its picture. Left
+    alone that error adds up at every join and the sound drifts away from
+    the picture. Here each cut picks the packet that keeps the running
+    total in step with the picture, so every part stays within half a
+    packet of it, however many parts there are."""
+    cache = {}
+    lines = ["ffconcat version 1.0"]
+    drift = 0.0                       # audio written minus picture written so far
+    for i, (src, start, stop) in enumerate(ranges):
+        if src not in cache:
+            cache[src] = _audio_packets(src)
+        packets = cache[src]
+        if not packets:
+            raise ff.FFmpegError(f"couldn't read the audio packets of {Path(src).name}")
+        durs = sorted(d for _, d in packets if d > 0)
+        half = (durs[len(durs) // 2] if durs else 0.021) / 2
+        lo = start + drift - half
+        hi = float("inf") if stop is None else stop + drift - half
+        sel = [(t, d) for t, d in packets if lo <= t < hi]
+        if not sel:
+            raise ff.FFmpegError(f"no audio found between {start:.2f}s and {stop:.2f}s")
+        first, last = sel[0][0], sel[-1][0] + sel[-1][1]
+        if stop is not None:
+            drift += (last - first) - (stop - start)
+        piece = tmpdir / f"audio{i}.mka"
+        # -copyts keeps the source's own times, so the packet times picked
+        # above select exactly those packets.
+        coarse = max(0.0, first - 10.0)
+        args = ["-copyts"] + (["-ss", f"{coarse:.6f}"] if coarse > 0 else []) + ["-i", str(src)]
+        args += ["-map", "0:a", "-c", "copy", "-ss", f"{first - 0.0001:.6f}", "-copypriorss", "0"]
+        if stop is not None:
+            args += ["-t", f"{last - first:.6f}"]
+        r = ff.run_ffmpeg(args + ["-y", str(piece)], 0, None, cancel, output_path=piece)
+        if not r.ok:
+            raise ff.FFmpegError(f"cutting the audio failed:\n{r.stderr_tail}")
+        lines.append(f"file '{piece.resolve().as_posix()}'")
+    path = tmpdir / "audio.ffconcat"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 def copy_compatible(spans: List[Span]) -> Optional[str]:
     """None if the spans can be joined by stream copy, else the reason."""
     sigs = {s.info.stream_signature() for s in spans}
@@ -280,7 +341,7 @@ def _encode_inputs_and_filters(spans: List[Span], encode: EncodeSettings, audio:
             else:
                 mix_in.append(labels[t])
         parts.append(f"{''.join(mix_in)}amix=inputs={len(mix)}:normalize=0:duration=longest,"
-                     f"alimiter=limit=0.98[mixed]")
+                     f"alimiter=limit=0.98:latency=1[mixed]")
         final_audio_labels.append("[mixed]")
         out_tracks.append(None)
         for t in selected:
@@ -339,13 +400,14 @@ def copy_audio_maps(first: MediaInfo, audio: AudioPlan, selected: List[int], con
             else:
                 mix_in.append(labels[t])
         parts.append(f"{''.join(mix_in)}amix=inputs={len(mix)}:normalize=0:duration=longest,"
-                     f"alimiter=limit=0.98[mixed]")
+                     f"alimiter=limit=0.98:latency=1[mixed]")
         maps += ["-map", "[mixed]"]
         out_tracks.append(None)
     for t in selected:
         if t in mix and len(mix) >= 2 and not audio.keep_originals:
             continue
-        maps += ["-map", labels[t]]
+        # A track the filter graph doesn't touch is mapped from the input itself.
+        maps += ["-map", labels[t] if labels[t] != f"[{src}:{t}]" else f"{src}:{t}"]
         out_tracks.append(t)
     return parts, maps, out_tracks, ["-c:a", "aac", "-b:a", "192k"]
 
@@ -357,19 +419,28 @@ def _render_copy(spans, out_path, audio: AudioPlan, include_video, mixed_label, 
     selected = audio.selected(n_avail)
     video = include_video and first.has_video
     with tempfile.TemporaryDirectory(prefix="trimmer_copy_") as td:
-        if len(spans) == 1:
+        if len(spans) == 1 and spans[0].start <= 0.0005:
             s = spans[0]
             args = []
-            if s.start > 0.0005:
-                args += ["-ss", f"{s.start:.6f}"]
             if s.end is not None and s.end < s.info.duration - 0.0005:
                 args += ["-t", f"{s.length:.6f}"]
             args += ["-i", str(s.path)]
         else:
+            # Starts are cut with the concat demuxer's in-points even for one
+            # span: an input -ss can land a whole keyframe interval early (in
+            # MKV with B-frames ffmpeg seeks ~0.13 s before the time given).
             args = ["-f", "concat", "-safe", "0", "-i", str(_ffconcat(spans, Path(td)))]
+            if selected:
+                # The concat demuxer also passes the audio from before each
+                # in-point, so the sound fell further behind at every join; each
+                # part's audio is cut separately instead. -copyts keeps that
+                # unused early audio from shifting the picture.
+                alist = cut_audio_copy([(s.path, s.start, s.end) for s in spans], Path(td), cancel)
+                args = ["-copyts"] + args + ["-f", "concat", "-safe", "0", "-i", str(alist)]
 
         maps = ["-map", "0:v:0"] if video else []
-        parts, amaps, out_tracks, acodec = copy_audio_maps(first, audio, selected, container)
+        a_in = 1 if (len(spans) > 1 or spans[0].start > 0.0005) and selected else 0
+        parts, amaps, out_tracks, acodec = copy_audio_maps(first, audio, selected, container, input_index=a_in)
         if parts:
             args += ["-filter_complex", ";".join(parts)]
         maps += amaps

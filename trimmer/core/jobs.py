@@ -1079,7 +1079,7 @@ def _packet_output(job, ctx, pj: pk.PacketJoin, folder: Path, stem: str, ext: st
                 else:
                     mix_in.append(f"[{a_in}:a:{t}]")
             parts.append(f"{''.join(mix_in)}amix=inputs={len(mix)}:normalize=0:duration=longest,"
-                         f"alimiter=limit=0.98[mixed]")
+                         f"alimiter=limit=0.98:latency=1[mixed]")
             amap.append("[mixed]")
             out_tracks.append(None)
             for t in selected:
