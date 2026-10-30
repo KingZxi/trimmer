@@ -32,6 +32,8 @@ _VERB = {"trim": "trimmed", "compress": "compressed", "merge": "merged"}
 def describe_encode(enc, quality=None) -> str:
     """'H.265, q28' / 'H.264, 9.5 MB' / 'H.264, lossless' for the tag."""
     codec = _CODEC_NAMES.get(enc.codec, enc.codec)
+    if getattr(enc, "uses_ten_bit", False):
+        codec += " 10-bit"
     if enc.mode == "lossless":
         return f"{codec}, lossless"
     if enc.mode == "target_size":

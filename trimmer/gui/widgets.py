@@ -489,6 +489,12 @@ class EncodeForm(QWidget):
         self.gop.setSingleStep(0.5)
         self.gop.setSuffix(" s")
         self.gop.setSpecialValueText("Encoder default")
+        self.ten_bit = QCheckBox("10-bit colour (about 5-10% smaller, less banding)")
+        self.ten_bit.setToolTip(
+            "Same quality in a smaller file, and smoother skies and dark scenes.\n"
+            "H.265 and AV1 only. 10-bit H.265 may not preview in Discord or some browsers,\n"
+            "and very old devices may not play it. Leave off for clips you share.\n"
+            "It can't be undone later without re-encoding.")
         self.revert = QCheckBox("Keep the original if compressing would make it bigger")
         self.revert_hint = QLabel()
         f.addRow("Method", self.mode)
@@ -509,6 +515,7 @@ class EncodeForm(QWidget):
         f.addRow("Max resolution", self.height_cap)
         f.addRow("Max frame rate", self.fps_cap)
         f.addRow("Keyframe every", self.gop)
+        f.addRow("", self.ten_bit)
         f.addRow("", self.revert)
         self.form = f
         for w in (self.mode, self.codec, self.encoder, self.preset, self.audio, self.height_cap, self.fps_cap,
@@ -517,6 +524,7 @@ class EncodeForm(QWidget):
         for w in (self.crf, self.target, self.gop):
             w.valueChanged.connect(self._update)
         self.revert.toggled.connect(self._update)
+        self.ten_bit.toggled.connect(self._update)
         self._update()
 
     def set_encoders(self, encoders):
@@ -537,6 +545,7 @@ class EncodeForm(QWidget):
         self.form.setRowVisible(self.target, mode == "target_size")
         self.form.setRowVisible(self.revert, mode != "target_size")
         self.encoder.setEnabled(mode != "lossless")
+        self.ten_bit.setEnabled(mode != "lossless" and self.codec.currentData() in ("h265", "av1"))
         self.changed.emit()
 
     def settings(self) -> EncodeSettings:
@@ -548,7 +557,8 @@ class EncodeForm(QWidget):
             preset=self.preset.currentText(), target_size_mb=self.target.value(),
             audio=self.audio.currentData(), max_height=self.height_cap.currentData(),
             max_fps=self.fps_cap.currentData(), keyframe_interval=self.gop.value(),
-            auto3_target=self.auto3_target.currentData(), revert_if_larger=self.revert.isChecked())
+            auto3_target=self.auto3_target.currentData(), revert_if_larger=self.revert.isChecked(),
+            ten_bit=self.ten_bit.isChecked())
         return s.validate()
 
     def set_settings(self, s: EncodeSettings):
@@ -568,6 +578,7 @@ class EncodeForm(QWidget):
         near = min(range(len(AUTO3_TARGETS)), key=lambda i: abs(AUTO3_TARGETS[i][1] - s.auto3_target))
         self.auto3_target.setCurrentIndex(near)
         self.revert.setChecked(s.revert_if_larger)
+        self.ten_bit.setChecked(s.ten_bit)
         self._update()
 
 

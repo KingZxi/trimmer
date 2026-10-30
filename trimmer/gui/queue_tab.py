@@ -53,6 +53,8 @@ def describe(job) -> str:
     if job.compress and (isinstance(job, J.MergeJob) or job.make_video):
         e = EncodeSettings.from_dict(job.encode)
         codec = {"h264": "H.264", "h265": "H.265", "av1": "AV1"}.get(e.codec, CODECS.get(e.codec, e.codec))
+        if e.uses_ten_bit:
+            codec += " 10-bit"
         hw = "" if e.encoder == "software" else " " + e.encoder.upper()
         if e.mode == "lossless":
             q = "lossless"

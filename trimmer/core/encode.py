@@ -42,6 +42,11 @@ _AMF_QUALITY = {"ultrafast": "speed", "superfast": "speed", "veryfast": "speed",
                 "fast": "balanced", "medium": "balanced", "slow": "quality", "slower": "quality",
                 "veryslow": "quality"}
 
+# Hardware HEVC encoders are told Main 10 outright rather than trusting
+# each driver to pick it from the P010 input. AV1's Main profile already
+# covers 10-bit.
+_TEN_BIT_PROFILE = {"hevc_nvenc": "main10", "hevc_qsv": "main10", "hevc_amf": "main10"}
+
 # Audio codecs that can't be stream-copied into an MP4.
 _MP4_UNSAFE_AUDIO = re.compile(r"^(pcm_.*|vorbis|wmav.*|ra_.*|cook)$")
 
@@ -60,6 +65,7 @@ class EncodeSettings:
     keyframe_interval: float = 0      # seconds, 0 = encoder default
     auto3_target: float = 93.0        # VMAF target (SSIM fallback uses 97)
     revert_if_larger: bool = False
+    ten_bit: bool = False             # 10-bit colour for H.265 / AV1 (ignored for H.264 and lossless)
 
     def to_dict(self):
         return asdict(self)
@@ -90,6 +96,7 @@ class EncodeSettings:
                 self.audio = str(int(self.audio))
             except (TypeError, ValueError):
                 self.audio = "copy"
+        self.ten_bit = self.ten_bit is True or str(self.ten_bit).lower() in ("1", "true")
         try:
             self.auto3_target = min(99.0, max(80.0, float(self.auto3_target)))
         except (TypeError, ValueError):
@@ -107,6 +114,20 @@ class EncodeSettings:
             enc = "software"      # hardware encoders have no reliable lossless mode
         return _ENCODER_NAMES[(enc, self.codec)]
 
+    @property
+    def uses_ten_bit(self) -> bool:
+        """10-bit only for lossy H.265 / AV1: 10-bit H.264 barely plays
+        anywhere, and lossless keeps the source's own pixel format."""
+        return self.ten_bit and self.codec in ("h265", "av1") and self.mode != "lossless"
+
+    @property
+    def pix_fmt(self) -> str:
+        """The pixel format a 10-bit encode is fed: hardware encoders take
+        P010, the software ones planar 10-bit."""
+        if not self.uses_ten_bit:
+            return ""
+        return "yuv420p10le" if self.encoder_name.startswith("lib") else "p010le"
+
     def problems(self) -> List[str]:
         """Settings that can't work, as plain-language messages."""
         out = []
@@ -117,6 +138,9 @@ class EncodeSettings:
         name = self.encoder_name
         if not ff.has_encoder(name):
             out.append(f"Your ffmpeg build doesn't include the {name} encoder.")
+        elif self.uses_ten_bit and not ff.encoder_works(name, self.pix_fmt, _TEN_BIT_PROFILE.get(name)):
+            out.append(f"The {ENCODERS[self.encoder]} {CODECS[self.codec]} encoder ({name}) can't make 10-bit "
+                       f"video on this PC. Turn off 10-bit or pick another encoder.")
         return out
 
 
@@ -132,6 +156,8 @@ def quality_label(settings: EncodeSettings, quality: int, method: str = None) ->
         return " (LOSSLESS)"
     hw = settings.encoder != "software"
     hw_tag = f" {settings.encoder.upper()}" if hw else ""
+    if settings.uses_ten_bit:
+        codec += " 10-bit"
     if settings.mode == "target_size":
         return f" (TARGET {settings.target_size_mb:g}MB), ({codec}{hw_tag}, {settings.preset})"
     word = "CQ" if hw else "CRF"
@@ -218,8 +244,12 @@ def video_codec_args(settings: EncodeSettings, info: MediaInfo, quality: Optiona
         args += ["-x265-params", ":".join(x265_params)]
     if settings.keyframe_interval and settings.keyframe_interval > 0:
         args += ["-g", str(max(1, int(round(output_fps(settings, info) * settings.keyframe_interval))))]
+    if settings.uses_ten_bit:
+        args += ["-pix_fmt", settings.pix_fmt]
+        if name in _TEN_BIT_PROFILE:
+            args += ["-profile:v", _TEN_BIT_PROFILE[name]]
     # Broadest playback support for 8-bit lossy output.
-    if settings.mode != "lossless" and info.pix_fmt in ("yuvj420p", "yuv444p", "yuv422p", "rgb24", "bgra", "bgr0"):
+    elif settings.mode != "lossless" and info.pix_fmt in ("yuvj420p", "yuv444p", "yuv422p", "rgb24", "bgra", "bgr0"):
         args += ["-pix_fmt", "yuv420p"]
     return args
 

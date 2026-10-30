@@ -364,18 +364,19 @@ def has_encoder(name: str) -> bool:
     return _cache[key]
 
 
-def encoder_works(name: str) -> bool:
+def encoder_works(name: str, pix_fmt: str = "yuv420p", profile: str = None) -> bool:
     """True if ffmpeg lists the encoder AND a one-frame test encode succeeds
-    (a hardware encoder is listed even when there's no matching GPU)."""
-    key = ("works", name)
+    (a hardware encoder is listed even when there's no matching GPU, and a
+    GPU or x265 build may not do 10-bit)."""
+    key = ("works", name, pix_fmt, profile)
     if key not in _cache:
         ok = False
         if has_encoder(name):
             try:
                 out = run_quiet([ffmpeg_bin(), "-hide_banner", "-loglevel", "error",
                                  "-f", "lavfi", "-i", "color=c=black:s=320x240:r=30:d=0.2",
-                                 "-frames:v", "3", "-pix_fmt", "yuv420p", "-c:v", name,
-                                 "-f", "null", "-"], timeout=30)
+                                 "-frames:v", "3", "-pix_fmt", pix_fmt, "-c:v", name]
+                                + (["-profile:v", profile] if profile else []) + ["-f", "null", "-"], timeout=30)
                 ok = out.returncode == 0
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 ok = False

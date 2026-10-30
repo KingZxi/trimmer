@@ -486,6 +486,12 @@ def _render_two_pass(spans, out_path, encode, audio, include_video, mixed_label,
         enc_args = ["-c:a", "aac", "-b:a", "128k"]
     two_pass = encode.encoder_name in ("libx264", "libx265")
     vf = ["-vf", ",".join(meta["vf"])] if meta["vf"] else []
+    # Both passes must see the same frames. Left to itself ffmpeg passes
+    # frames straight through to the null output of pass 1 but evens them
+    # out to a constant rate for an MP4, and x265 then stops on a stats
+    # file with the wrong frame count.
+    if two_pass:
+        vf += ["-fps_mode", "cfr" if container in (".mp4", ".mov") else "vfr"]
 
     def half(p):
         return (lambda pr: on_progress(Progress(

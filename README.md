@@ -65,7 +65,8 @@ Drop in one clip or hundreds, either as files or whole folders. For each clip yo
   phones and Discord can hear everything. The separate tracks can be kept too.
 - **Compress** with a preset or your own settings: CRF, auto2, auto3,
   target file size, lossless, H.264/H.265/AV1, NVENC/QSV/AMF when your GPU
-  supports it, and a resolution or frame rate cap.
+  supports it, optional 10-bit colour for H.265/AV1, and a resolution or frame
+  rate cap.
 - **Rip** audio tracks (original, WAV, FLAC, MP3, M4A) or the video on its own.
 - Compressed files get the settings in their name, e.g. `(LOSSY), (CQ28
   auto2, H265 NVENC, medium)`. Turn this off in Settings → General.
