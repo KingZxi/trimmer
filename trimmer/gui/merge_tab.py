@@ -24,6 +24,7 @@ from ..core.util import VIDEO_EXTENSIONS, format_hms, format_hms_ms, parse_timec
 from .theme import colour, set_kind
 from .widgets import (OWN_TIP, STAR, HintTree, OptionBinding, card, clean_opts, copy_opts, hbox, label,
                       show_in_folder)
+from .clips_tab import CustomEncodeDialog
 from .folder_watch import FolderWatcher
 from .preview import PreviewDialog
 from .queue_checks import check_new_jobs
@@ -284,9 +285,13 @@ class MergeTab(QWidget):
         self.compress = QCheckBox("Compress in the same pass")
         self.preset = QComboBox()
         self.preset.setMinimumWidth(190)
+        self.b_custom = set_kind(QPushButton("Edit…"), "ghost")
+        self.b_custom.clicked.connect(self.edit_custom)
         self.preset.setEnabled(False)
+        self.b_custom.setEnabled(False)
         self.compress.toggled.connect(self.preset.setEnabled)
-        ol.addWidget(hbox(self.compress, self.preset))
+        self.compress.toggled.connect(self.b_custom.setEnabled)
+        ol.addWidget(hbox(self.compress, self.preset, self.b_custom))
 
         self.g_rip = QGroupBox("Rip tracks to separate files")
         self.g_rip.setCheckable(True)
@@ -1086,6 +1091,16 @@ class MergeTab(QWidget):
         name = st["preset"]
         s = self.main.settings
         return EncodeSettings.from_dict(s.presets[name]) if name in s.presets else s.encode_settings()
+
+    def edit_custom(self):
+        """Same as the Clips tab: start from the preset shown, save the
+        result as the Custom settings and switch to them."""
+        dlg = CustomEncodeDialog(self._enc({"preset": self.preset.currentText()}), self.main.encoders, self)
+        if dlg.exec():
+            self.main.settings.encode = dlg.form.settings().to_dict()
+            self.main.settings.save()
+            self.preset.setCurrentIndex(0)
+            self.compress.setChecked(True)
 
     def queue(self):
         """Queue each ticked session with its own options, or the shared ones."""

@@ -5,6 +5,7 @@
 - New: "10-bit colour" option for H.265 and AV1 compression: about 5-10% smaller at the same
   quality, with less banding. Off by default. Hardware encoders are checked before use, and file
   names and the queue show "10-bit".
+- New: Replay merge has the same "Edit…" button next to the compression preset as Clips.
 - Fixed: H.265 "Target file size" compression failed ("Incomplete CU-tree stats file").
 - Fixed: compressed trims that start partway into a clip (including the second part of a split)
   and "Original" audio rips of them could play with the audio late in some players. The copied

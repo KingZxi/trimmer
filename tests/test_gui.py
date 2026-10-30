@@ -1312,3 +1312,30 @@ def test_split_here_makes_parts_with_nothing_between():
     assert [j.segments for j in jobs] == [[(0.5, 2.0), (3.0, 4.0)], [(4.0, 5.5)], [(6.0, 12.5)], [(12.5, end)]]
     w.settings.on_close = "discard"
     w.close()
+
+
+def test_merge_tab_edit_compress_settings(monkeypatch):
+    """Replay merge has the same Edit… button as Clips: it starts from the
+    preset shown and saves the result as the Custom settings."""
+    from trimmer.core.encode import EncodeSettings
+    from trimmer.gui import clips_tab
+    w = window(WORK / "out_edit")
+    m = w.merge
+    assert not m.b_custom.isEnabled()
+    m.compress.setChecked(True)
+    assert m.b_custom.isEnabled()
+    name = next(iter(w.settings.presets))
+    m.preset.setCurrentIndex(m.preset.findText(name))
+    seen = {}
+
+    def fake_exec(dlg):
+        seen["start"] = dlg.form.settings().to_dict()
+        dlg.form.set_settings(EncodeSettings(codec="av1", quality=40, ten_bit=True))
+        return True
+    monkeypatch.setattr(clips_tab.CustomEncodeDialog, "exec", fake_exec)
+    m.b_custom.click()
+    assert seen["start"] == EncodeSettings.from_dict(w.settings.presets[name]).to_dict()
+    assert m.preset.currentIndex() == 0 and m.compress.isChecked()
+    e = m._enc(m.shared)
+    assert (e.codec, e.quality, e.ten_bit) == ("av1", 40, True)
+    w.close()
