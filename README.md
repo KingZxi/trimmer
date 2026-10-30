@@ -63,7 +63,8 @@ Drop in one clip or hundreds, either as files or whole folders. For each clip yo
   shout is easy to spot (turn off in Settings → General).
 - **Choose audio tracks**: keep any of them, or mix them into one track so
   phones and Discord can hear everything. The separate tracks can be kept too.
-- **Compress** with a preset or your own settings: CRF, auto2, auto3,
+- **Compress** with a preset or your own settings: CRF, auto2, auto3, auto
+  settings (picks the codec and CRF per clip),
   target file size, lossless, H.264/H.265/AV1, NVENC/QSV/AMF when your GPU
   supports it, optional 10-bit colour for H.265/AV1, and a resolution or frame
   rate cap.

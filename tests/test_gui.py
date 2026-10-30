@@ -1339,3 +1339,57 @@ def test_merge_tab_edit_compress_settings(monkeypatch):
     e = m._enc(m.shared)
     assert (e.codec, e.quality, e.ten_bit) == ("av1", 40, True)
     w.close()
+
+
+def test_queue_waits_for_auto_settings():
+    """Jobs set to 'Auto settings, measured' are analysed in the queue first:
+    Start stays off until then, the choice shows in the details panel, and
+    the queue starts by itself afterwards when auto-start is on."""
+    from trimmer.core.encode import EncodeSettings
+    from trimmer.core.jobs import ClipJob, JobOptions as JO
+    from trimmer.gui import queue_tab as qt
+    src = fx.single_clip(WORK / "src_autoset")
+    w = window(WORK / "out_autoset_gui")
+    q = w.queue
+    q.auto_start.setChecked(True)
+    enc = EncodeSettings(quality="autoset", preset="ultrafast", give_up=70).to_dict()
+    job = ClipJob(str(src), compress=True, encode=enc, options=JO(output_dir=str(WORK / "out_autoset_gui"),
+                                                                    conflict_policy="rename"))
+    q.add_jobs([job], start=True)
+    item = q.items[-1]
+    assert not item.ready and not q.is_running()
+    assert not q.b_start.isEnabled() and "auto settings" in q.b_start.toolTip()
+    pump(5, lambda: "Choosing" in q.table.item(q.items.index(item), qt.C_STATUS).text())
+    assert q.table.item(q.items.index(item), qt.C_STATUS).text() == "Choosing settings"
+    assert "Auto settings (give up 70)" in q.table.item(q.items.index(item), qt.C_SET).text()
+    q.start()                           # pressing Start early just waits
+    assert not q.is_running()
+    pump(240, lambda: item.ready)
+    assert item.ready and item.job.encode.get("chosen")
+    q.table.selectRow(q.items.index(item))
+    assert "Auto settings: " in q.log.toPlainText()
+    assert "(auto settings)" in q.table.item(q.items.index(item), qt.C_SET).text()
+    pump(120, lambda: item.status not in ("queued", "running"))
+    assert item.status == "done", item.log
+    assert "autoset" in item.result.outputs[0]
+    w.close()
+
+
+def test_changing_settings_mid_analysis_starts_over():
+    from trimmer.core.encode import EncodeSettings
+    from trimmer.core.jobs import ClipJob, JobOptions as JO
+    src = fx.single_clip(WORK / "src_autoset2")
+    w = window(WORK / "out_autoset_gui2")
+    q = w.queue
+    q.auto_start.setChecked(False)
+    enc = EncodeSettings(quality="autoset", preset="ultrafast", give_up=10).to_dict()
+    q.add_jobs([ClipJob(str(src), compress=True, encode=enc, options=JO(output_dir=str(WORK / "out_autoset_gui2")))],
+               start=False)
+    item = q.items[-1]
+    pump(10, lambda: q._estimating is item and item.analysis.startswith("testing"))
+    q.set_compression([item], None)               # no compression any more
+    pump(30, lambda: item.ready)
+    assert item.ready and not item.job.compress and not item.job.encode.get("chosen")
+    assert q.b_start.isEnabled(), [(i.status, i.ready, i.job.title) for i in q.items] + [q.is_running()]
+    q.remove_selected([item])
+    w.close()

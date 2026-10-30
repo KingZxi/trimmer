@@ -10,10 +10,10 @@ from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QUrl, Signal
 from PySide6.QtGui import (QColor, QDesktopServices, QFont, QIcon, QImage, QKeySequence, QPainter, QPainterPath,
                            QPen, QShortcut)
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QHBoxLayout,
-                               QLabel, QMenu, QMessageBox, QSpinBox, QTableWidget, QToolButton, QTreeWidget,
+                               QLabel, QMenu, QMessageBox, QSlider, QSpinBox, QTableWidget, QToolButton, QTreeWidget,
                                QVBoxLayout, QWidget)
 
-from ..core.encode import CODECS, ENCODERS, VALID_PRESETS, EncodeSettings
+from ..core.encode import CODECS, ENCODERS, VALID_PRESETS, EncodeSettings, give_up_target
 from ..core.util import format_hms_ms
 
 from .theme import apply_theme, clear_icon_path, colour  # noqa: F401  (re-exported)
@@ -437,7 +437,8 @@ class Timeline(QWidget):
 
 
 MODES = [("Quality (CRF)", "crf"), ("Auto quality, fast (auto2)", "auto2"),
-         ("Auto quality, measured (auto3)", "auto3"), ("Target file size", "target_size"),
+         ("Auto quality, measured (auto3)", "auto3"), ("Auto settings, measured (codec and CRF)", "autoset"),
+         ("Target file size", "target_size"),
          ("Lossless", "lossless")]
 AUDIO = [("Copy original (no loss)", "copy"), ("AAC 96 kbps", "96"), ("AAC 128 kbps", "128"),
          ("AAC 160 kbps", "160"), ("AAC 192 kbps", "192"), ("AAC 256 kbps", "256"), ("AAC 320 kbps", "320")]
@@ -509,6 +510,19 @@ class EncodeForm(QWidget):
         self.auto3_target.setToolTip("How close to the original auto3 keeps each clip, as a VMAF score out of 100.\n"
                                      "It picks the smallest file that still scores at least this.")
         f.addRow("Quality target", self.auto3_target)
+        self.give_up = QSlider(Qt.Horizontal)
+        self.give_up.setRange(0, 100)
+        self.give_up.setValue(32)
+        self.give_up.setToolTip("How much quality you're willing to give up for a smaller file.\n"
+                                "0 keeps it as close to the original as possible (VMAF 99), 32 is balanced\n"
+                                "(VMAF 93), 100 is the smallest files with clearly visible loss (VMAF 80).\n"
+                                "Each clip is tested with H.265, AV1 and H.264 at several CRFs, and the\n"
+                                "smallest one that keeps this quality is used. The queue analyses clips\n"
+                                "before it can start.")
+        self.give_up_text = QLabel()
+        self.give_up_text.setMinimumWidth(150)
+        self.give_up_row = hbox(self.give_up, self.give_up_text, stretch_end=False)
+        f.addRow("Quality to give up", self.give_up_row)
         f.addRow("Target size", self.target)
         f.addRow("Speed preset", self.preset)
         f.addRow("Audio", self.audio)
@@ -521,7 +535,7 @@ class EncodeForm(QWidget):
         for w in (self.mode, self.codec, self.encoder, self.preset, self.audio, self.height_cap, self.fps_cap,
                   self.auto3_target):
             w.currentIndexChanged.connect(self._update)
-        for w in (self.crf, self.target, self.gop):
+        for w in (self.crf, self.target, self.gop, self.give_up):
             w.valueChanged.connect(self._update)
         self.revert.toggled.connect(self._update)
         self.ten_bit.toggled.connect(self._update)
@@ -542,27 +556,32 @@ class EncodeForm(QWidget):
         mode = self.mode.currentData()
         self.form.setRowVisible(self.crf, mode == "crf")
         self.form.setRowVisible(self.auto3_target, mode == "auto3")
+        self.form.setRowVisible(self.give_up_row, mode == "autoset")
+        self.give_up_text.setText(f"{self.give_up.value()}  (VMAF {give_up_target(self.give_up.value()):g})")
+        self.codec.setEnabled(mode != "autoset")
+        self.codec.setToolTip("Auto settings tries H.265, AV1 and H.264 and picks per clip"
+                              if mode == "autoset" else "")
         self.form.setRowVisible(self.target, mode == "target_size")
         self.form.setRowVisible(self.revert, mode != "target_size")
         self.encoder.setEnabled(mode != "lossless")
-        self.ten_bit.setEnabled(mode != "lossless" and self.codec.currentData() in ("h265", "av1"))
+        self.ten_bit.setEnabled(mode == "autoset" or (mode != "lossless" and self.codec.currentData() in ("h265", "av1")))
         self.changed.emit()
 
     def settings(self) -> EncodeSettings:
         mode = self.mode.currentData()
         s = EncodeSettings(
-            mode="lossy" if mode in ("crf", "auto2", "auto3") else mode,
+            mode="lossy" if mode in ("crf", "auto2", "auto3", "autoset") else mode,
             codec=self.codec.currentData(), encoder=self.encoder.currentData() or "software",
-            quality=mode if mode in ("auto2", "auto3") else self.crf.value(),
+            quality=mode if mode in ("auto2", "auto3", "autoset") else self.crf.value(),
             preset=self.preset.currentText(), target_size_mb=self.target.value(),
             audio=self.audio.currentData(), max_height=self.height_cap.currentData(),
             max_fps=self.fps_cap.currentData(), keyframe_interval=self.gop.value(),
             auto3_target=self.auto3_target.currentData(), revert_if_larger=self.revert.isChecked(),
-            ten_bit=self.ten_bit.isChecked())
+            ten_bit=self.ten_bit.isChecked(), give_up=self.give_up.value())
         return s.validate()
 
     def set_settings(self, s: EncodeSettings):
-        key = s.mode if s.mode != "lossy" else (s.quality if s.quality in ("auto2", "auto3") else "crf")
+        key = s.mode if s.mode != "lossy" else (s.quality if s.quality in ("auto2", "auto3", "autoset") else "crf")
         self.mode.setCurrentIndex(max(0, self.mode.findData(key)))
         self.codec.setCurrentIndex(max(0, self.codec.findData(s.codec)))
         self.encoder.setCurrentIndex(max(0, self.encoder.findData(s.encoder)))
@@ -579,6 +598,7 @@ class EncodeForm(QWidget):
         self.auto3_target.setCurrentIndex(near)
         self.revert.setChecked(s.revert_if_larger)
         self.ten_bit.setChecked(s.ten_bit)
+        self.give_up.setValue(s.give_up)
         self._update()
 
 

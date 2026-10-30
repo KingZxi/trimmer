@@ -52,6 +52,8 @@ def describe(job) -> str:
         bits.append("Mixed audio")
     if job.compress and (isinstance(job, J.MergeJob) or job.make_video):
         e = EncodeSettings.from_dict(job.encode)
+        auto = e.is_autoset
+        e = e.applied()
         codec = {"h264": "H.264", "h265": "H.265", "av1": "AV1"}.get(e.codec, CODECS.get(e.codec, e.codec))
         if e.uses_ten_bit:
             codec += " 10-bit"
@@ -65,7 +67,10 @@ def describe(job) -> str:
             if e.quality == "auto3" and e.auto3_target != 93.0:
                 q += f" (target {e.auto3_target:g})"
         cap = f" {e.max_height}p" if e.max_height else ""
-        bits.append(f"{codec}{hw} {q}{cap}")
+        if e.is_autoset:            # not chosen yet
+            bits.append(f"Auto settings (give up {e.give_up}){' 10-bit' if e.ten_bit else ''}{hw}{cap}")
+        else:
+            bits.append(f"{codec}{hw} {q}{' (auto settings)' if auto else ''}{cap}")
     elif isinstance(job, J.MergeJob):
         bits.append({"exact": "Frame-exact re-encode", "lossless": "Lossless only"}.get(
             job.options.merge_method, "Lossless when possible"))
@@ -87,6 +92,18 @@ def default_name(job, settings) -> str:
             return "Merged " + t[len("Session "):]
         return t.replace("Session ", "", 1) if t.startswith("Session ") else t
     return Path(job.source).stem + settings.name_suffix
+
+
+def prepare_job(job, cancel=None, on_step=None):
+    """(predicted output bytes or None, input bytes, chosen auto settings or
+    None). Auto settings are analysed first (minutes, not seconds), then the
+    size is predicted for what they chose."""
+    chosen = None
+    if J.needs_analysis(job):
+        chosen = J.analyse_job(job, cancel, on_step=on_step)
+        job = replace(job, encode={**job.encode, "chosen": chosen})
+    est, in_bytes = estimate_job(job)
+    return est, in_bytes, chosen
 
 
 def estimate_job(job):
@@ -111,7 +128,9 @@ def estimate_job(job):
     plain = int(info.size * kept / dur) if dur else info.size
     if not job.compress:
         return plain, info.size
-    enc = EncodeSettings.from_dict(job.encode)
+    enc = EncodeSettings.from_dict(job.encode).applied()
+    if enc.is_autoset:
+        return None, info.size              # not analysed yet
     if enc.mode == "target_size":
         return int(enc.target_size_mb * 1024 * 1024), info.size
     if enc.mode == "lossless":
@@ -148,7 +167,10 @@ class QueueTab(QWidget):
         self.closing = False        # set on quit so late signals don't overwrite the saved queue
         self.paused = False
         self._estimating = None
+        self._est_cancel = None
+        self._est_task = None
         self._to_estimate = []
+        self._start_when_ready = False   # auto-start once every job's settings are chosen
         self.on_finished = {}       # id(job) -> callback(item), for jobs another tab wants to follow up on
         self._build()
 
@@ -264,14 +286,21 @@ class QueueTab(QWidget):
     def _buttons(self):
         running = self.is_running()
         waiting = any(i.status == "queued" for i in self.items)
+        choosing = self._choosing()
         self.b_start.setText("Resume" if running and self.paused else "Start")
-        self.b_start.setEnabled((running and self.paused) or (not running and waiting))
+        self.b_start.setEnabled((running and self.paused) or (not running and waiting and not choosing))
+        self.b_start.setToolTip(f"Waiting for auto settings to be chosen for {choosing} job(s)"
+                                if choosing and not running else "")
         self.b_pause.setEnabled(running and not self.paused)
         self.b_cancel.setEnabled(running)
         self.b_stop.setEnabled(running)
         sel = self._selected()
         self.b_retry.setEnabled(any(i.status in ("failed", "cancelled", "skipped") for i in sel))
         self.jobs_changed.emit()
+
+    def _choosing(self) -> int:
+        """Waiting jobs whose auto settings aren't chosen yet."""
+        return sum(1 for i in self.items if i.status == "queued" and not i.ready)
 
     def note_for(self, sources) -> str:
         """The queue status of the latest job made from exactly these files, for the Notes column of
@@ -294,7 +323,11 @@ class QueueTab(QWidget):
             self._to_estimate.append(item)
         self._persist()
         self._estimate_next()
-        if start and self.auto_start.isChecked():
+        if start and self.auto_start.isChecked() and self._choosing() and not self.is_running():
+            self._start_when_ready = True
+            self.status.emit(f"Added {len(jobs)} job(s) to the queue. Choosing auto settings first; "
+                             f"the queue starts when that's done.")
+        elif start and self.auto_start.isChecked():
             self.status.emit(f"Added {len(jobs)} job(s) to the queue.")
             if not self.is_running():
                 self.start()
@@ -363,6 +396,8 @@ class QueueTab(QWidget):
         status = STATUS_TEXT.get(item.status, item.status)
         if item.status == "running":
             status = "Paused" if self.paused else (f"{status}: {item.stage}" if item.stage else status)
+        elif item.status == "queued" and not item.ready:
+            status = "Choosing settings" if item is self._estimating else "Waiting to choose settings"
         elif item.status == "queued" and self.paused and self.is_running():
             status = "Waiting (paused)"
         self._cell(r, C_STATUS, status)
@@ -374,6 +409,8 @@ class QueueTab(QWidget):
                 left.append(format_size(item.size))
             if item.eta and not self.paused:
                 left.append(format_hms(item.eta) + " left")
+        elif item.status == "queued" and item.analysis:
+            left.append(item.analysis)
         elif item.result is not None and item.result.messages and item.status in ("failed", "skipped"):
             left.append(item.result.messages[0].splitlines()[0][:160])
         self._cell(r, C_DETAIL, "  ·  ".join(left))
@@ -431,31 +468,86 @@ class QueueTab(QWidget):
             self._estimate_next()
             return
         self._estimating = item
-        t = Task(estimate_job, item.job, parent=self)
+        self._est_cancel = token = ff.CancelToken()
+        job = item.job
+        asked = dict(job.encode or {})       # the settings being analysed
+        t = Task(lambda: prepare_job(replace(job, encode=asked), token, lambda d, n: t.step.emit(d, n)),
+                 parent=self)
+        if not item.ready:
+            item.analysis = "starting…"
+            self._row(item)
 
-        def done(res, item=item):
-            item.estimate, item.in_bytes = res
+        def step(d, n, item=item):
+            item.analysis = f"testing samples {d}/{n}"
+            if item in self.items:
+                self._row(item)
+
+        def done(res, item=item, job=job):
+            if job.encode != asked:
+                self._estimate_done(item)       # changed meanwhile: it is queued again
+                return
+            item.estimate, item.in_bytes, chosen = res
+            if chosen is not None:
+                job.encode = {**job.encode, "chosen": chosen}
+                self._note(item, chosen["report"])
+                self._persist()
             self._estimate_done(item)
 
+        def failed(msg, item=item, job=job):
+            if token.cancelled or job.encode != asked:
+                self._estimate_done(item)
+                return
+            if J.needs_analysis(job):
+                self._note(item, [f"Couldn't choose auto settings: {msg}",
+                                  "They'll be chosen again when the job runs."])
+            self._estimate_done(item, give_up=True)
+
+        t.step.connect(step)
         t.done.connect(done)
-        t.failed.connect(lambda _m, item=item: self._estimate_done(item))
+        t.failed.connect(failed)
         t.start()
         self._est_task = t
 
-    def _estimate_done(self, item):
+    def _note(self, item, lines):
+        item.log.extend(lines)
+        sel = self._selected()
+        if len(sel) == 1 and sel[0] is item:
+            self.log.appendPlainText("\n".join(lines))
+
+    def _estimate_done(self, item, give_up=False):
+        """`give_up`: the analysis failed; the job itself tries again when it runs."""
         self._estimating = None
+        self._est_cancel = None
+        item.analysis = ""
+        item.ready = give_up or not J.needs_analysis(item.job)
         if item in self.items:
             self._row(item)
             self._selection_size()
+        self._buttons()
+        if self._start_when_ready and not self._choosing():
+            self._start_when_ready = False
+            if self.auto_start.isChecked() and not self.is_running() and not self.closing:
+                self.start()
         self._estimate_next()
+
+    def stop_estimates(self, wait_ms=0):
+        """Stop the running estimate or analysis (on quit)."""
+        if self._est_cancel is not None:
+            self._est_cancel.cancel()
+        if wait_ms and self._est_task is not None and self._est_task.isRunning():
+            self._est_task.wait(wait_ms)
 
     def _reestimate(self, items):
         for it in items:
             it.estimate = None
+            it.ready = not J.needs_analysis(it.job)
+            if it is self._estimating and self._est_cancel is not None:
+                self._est_cancel.cancel()       # its settings changed under it
             if it not in self._to_estimate:
                 self._to_estimate.append(it)
             if it in self.items:
                 self._row(it)
+        self._buttons()
         self._estimate_next()
 
     # ----------------------------------------------------------------- run
@@ -467,6 +559,11 @@ class QueueTab(QWidget):
 
     def start(self):
         if self.is_running() or not any(i.status == "queued" for i in self.items):
+            return
+        if self._choosing():
+            self._start_when_ready = True
+            self.status.emit("Choosing auto settings first; the queue starts when that's done.")
+            self._buttons()
             return
         self.paused = False
         self.runner = QueueRunner(self.items, self, lambda: self.main.settings.count_kept_savings)
@@ -782,6 +879,8 @@ class QueueTab(QWidget):
             self.items.remove(it)
             if it in self._to_estimate:
                 self._to_estimate.remove(it)
+            if it is self._estimating and self._est_cancel is not None:
+                self._est_cancel.cancel()
         self._rebuild()
         self._persist()
         self.running_changed.emit(self.is_running())

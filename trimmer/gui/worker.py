@@ -6,6 +6,7 @@ signal and waits on an Event the GUI sets.
 """
 
 import threading
+import time
 import traceback
 import uuid
 from pathlib import Path
@@ -32,6 +33,8 @@ class QueueItem:
         self.log = []
         self.estimate = None          # predicted output bytes (None = unknown / not yet)
         self.in_bytes = None
+        self.ready = not J.needs_analysis(job)   # False until auto settings are chosen
+        self.analysis = ""            # auto settings progress text while analysing
 
 
 class QueueRunner(QThread):
@@ -182,8 +185,12 @@ class QueueRunner(QThread):
                     break
             if self.cancel_all:
                 break
-            item = next((i for i in self.items if i.status == "queued"), None)
+            item = next((i for i in self.items if i.status == "queued" and i.ready), None)
             if item is None:
+                if any(i.status == "queued" for i in self.items):
+                    # Jobs still having their settings chosen: wait for them.
+                    time.sleep(0.25)
+                    continue
                 break
             item.status = "running"
             self.item_started.emit(item.id)
@@ -247,9 +254,11 @@ class QueueRunner(QThread):
 
 
 class Task(QThread):
-    """Run a function in the background; emits done(result) or failed(text)."""
+    """Run a function in the background; emits done(result) or failed(text).
+    The function may call self.step.emit(...) to report progress."""
     done = Signal(object)
     failed = Signal(str)
+    step = Signal(int, int)
 
     def __init__(self, fn, *args, parent=None):
         super().__init__(parent)

@@ -12,7 +12,7 @@ import json
 import math
 import re
 import tempfile
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field, replace
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -56,7 +56,7 @@ class EncodeSettings:
     mode: str = "lossy"               # lossy | lossless | target_size
     codec: str = "h265"               # h264 | h265 | av1
     encoder: str = "software"         # software | nvenc | qsv | amf
-    quality: object = 23              # int CRF/CQ, or "auto2" / "auto3"
+    quality: object = 23              # int CRF/CQ, or "auto2" / "auto3" / "autoset"
     preset: str = "medium"
     target_size_mb: float = 25.0
     audio: str = "copy"               # "copy" or a kbps number as text, e.g. "192"
@@ -66,6 +66,9 @@ class EncodeSettings:
     auto3_target: float = 93.0        # VMAF target (SSIM fallback uses 97)
     revert_if_larger: bool = False
     ten_bit: bool = False             # 10-bit colour for H.265 / AV1 (ignored for H.264 and lossless)
+    give_up: int = 32                 # autoset: quality to give up, 0 (VMAF 99) .. 100 (VMAF 80)
+    chosen: dict = field(default_factory=dict)   # autoset: what pick_settings chose for this job
+    method: str = ""                  # tag for the name when the CRF came from an analysis
 
     def to_dict(self):
         return asdict(self)
@@ -86,7 +89,7 @@ class EncodeSettings:
             self.encoder = "software"
         if self.preset not in VALID_PRESETS:
             self.preset = "medium"
-        if isinstance(self.quality, str) and self.quality not in ("auto2", "auto3"):
+        if isinstance(self.quality, str) and self.quality not in ("auto2", "auto3", "autoset"):
             try:
                 self.quality = int(self.quality)
             except ValueError:
@@ -98,6 +101,14 @@ class EncodeSettings:
                 self.audio = "copy"
         self.ten_bit = self.ten_bit is True or str(self.ten_bit).lower() in ("1", "true")
         try:
+            self.give_up = min(100, max(0, int(self.give_up)))
+        except (TypeError, ValueError):
+            self.give_up = 32
+        if not isinstance(self.chosen, dict) or not {"codec", "quality"} <= set(self.chosen) \
+                or self.chosen.get("codec") not in CODECS:
+            self.chosen = {}
+        self.method = str(self.method or "")
+        try:
             self.auto3_target = min(99.0, max(80.0, float(self.auto3_target)))
         except (TypeError, ValueError):
             self.auto3_target = 93.0
@@ -106,6 +117,23 @@ class EncodeSettings:
     @property
     def is_auto(self) -> bool:
         return self.mode == "lossy" and self.quality in ("auto2", "auto3")
+
+    @property
+    def is_autoset(self) -> bool:
+        """'Auto settings, measured': codec and CRF are picked per clip."""
+        return self.mode == "lossy" and self.quality == "autoset"
+
+    @property
+    def needs_analysis(self) -> bool:
+        return self.is_autoset and not self.chosen
+
+    def applied(self) -> "EncodeSettings":
+        """The plain settings auto settings chose (or these settings as they are)."""
+        if not self.is_autoset or not self.chosen:
+            return self
+        c = self.chosen
+        return replace(self, codec=c["codec"], quality=int(c["quality"]), ten_bit=bool(c.get("ten_bit")),
+                       chosen={}, method="autoset")
 
     @property
     def encoder_name(self) -> str:
@@ -130,6 +158,12 @@ class EncodeSettings:
 
     def problems(self) -> List[str]:
         """Settings that can't work, as plain-language messages."""
+        if self.is_autoset:
+            if self.chosen:
+                return self.applied().problems()
+            # Any one codec that works is enough: the others are skipped.
+            tried = [replace(self, codec=c, quality=23).problems() for c in CODECS]
+            return [] if any(not t for t in tried) else tried[0]
         out = []
         if self.mode == "lossless" and self.codec == "av1":
             out.append("AV1 (SVT-AV1) has no lossless mode. Pick H.264 or H.265 for lossless.")
@@ -469,6 +503,141 @@ def estimate_crf_measured(src: Path, info: MediaInfo, settings: EncodeSettings,
     return best, ("VMAF" if use_vmaf else "SSIM")
 
 
+# --------------------------------------------------------------------------
+# Auto settings, measured (autoset): codec and CRF picked per clip
+# --------------------------------------------------------------------------
+
+AUTOSET_ORDER = ("h265", "av1", "h264")      # ties go to the first
+
+# Finished analyses, so the Clips tab's estimate and the queue don't analyse
+# the same clip twice: (source, its size and date, settings) -> chosen.
+_picked: Dict[tuple, dict] = {}
+
+
+def give_up_target(give_up: int) -> float:
+    """The VMAF a 'quality to give up' value aims for: 0 -> 99, the default
+    32 -> 93 (auto3's default), 100 -> about 80."""
+    return round(99.0 - min(100, max(0, int(give_up))) * 0.1875, 2)
+
+
+def _crf_bounds(codec: str) -> Tuple[int, int]:
+    # 31 CRFs a side, so five halvings land on one exact value. Wider than
+    # auto3's range: a big 'give up' can need CRFs auto3 never tries.
+    off = {"h264": 0, "h265": 5, "av1": 10}[codec]
+    return 10 + off, 40 + off
+
+
+def _kbps_text(kbps: float) -> str:
+    return f"{kbps / 1000:.2f} Mbps" if kbps >= 1000 else f"{kbps:.0f} kbps"
+
+
+def pick_settings(src: Path, info: MediaInfo, settings: EncodeSettings,
+                  cancel: CancelToken = None, log=None, on_step=None) -> dict:
+    """autoset: for H.265, AV1 and H.264 (with the chosen encoder, preset,
+    10-bit and caps), find the highest CRF whose sample still meets the
+    VMAF target, and keep the codec whose sample is smallest there.
+
+    Returns the `chosen` dict: codec, quality, ten_bit, kbps, score, metric,
+    target, met (False if no codec reached the target) and report (lines for
+    the queue's details panel). `on_step(done, total)` reports progress."""
+    log = log or (lambda msg: None)
+    key = _trial_key(src, replace(settings, chosen={}, method=""), "autoset")
+    if key in _picked:
+        return json.loads(json.dumps(_picked[key]))
+    candidates, skipped = [], []
+    for codec in AUTOSET_ORDER:
+        cand = replace(settings, codec=codec, quality=23, chosen={}, method="")
+        why = cand.problems()
+        if why:
+            skipped.append(f"{CODECS[codec]} skipped: {why[0]}")
+        else:
+            candidates.append(cand)
+    if not candidates:
+        raise FFmpegError("No codec works with these settings: " + "; ".join(skipped))
+    use_vmaf = ff.libvmaf_available()
+    goal = give_up_target(settings.give_up)
+    steps = 5
+    with tempfile.TemporaryDirectory(prefix="trimmer_autoset_") as td:
+        tmp = Path(td)
+        ref, length = build_reference(src, info.duration, tmp, cancel, video_filters(settings, info))
+        for _attempt in range(2):              # a second go only if VMAF breaks partway
+            target = goal if use_vmaf else ssim_target(goal)
+            results = []
+            try:
+                for n, cand in enumerate(candidates):
+                    lo, hi = _crf_bounds(cand.codec)
+                    tried = {}
+                    for k in range(steps):
+                        if lo > hi:
+                            break
+                        mid = (lo + hi) // 2
+                        trial = tmp / f"{cand.codec}_{mid}.mkv"
+                        vargs = video_codec_args(cand, info, quality=mid, container=".mkv")
+                        try:
+                            ff.run_checked(["-i", str(ref), "-an"] + vargs
+                                           + ["-loglevel", "error", "-y", str(trial)], cancel=cancel)
+                        except FFmpegError as e:
+                            # This codec can't encode the clip here: leave it out.
+                            note = f"{CODECS[cand.codec]} skipped: {str(e).strip()[-200:]}"
+                            if note not in skipped:
+                                skipped.append(note)
+                            tried = {}
+                            break
+                        kbps = trial.stat().st_size * 8 / max(length, 0.1) / 1000
+                        score = _quality_score(ref, trial, use_vmaf, tmp, cancel)
+                        ff.safe_unlink(trial)
+                        tried[mid] = (kbps, score)
+                        if score >= target:
+                            lo = mid + 1
+                        else:
+                            hi = mid - 1
+                        if on_step:
+                            on_step(n * steps + k + 1, len(candidates) * steps)
+                    if not tried:
+                        continue
+                    met = [q for q, (_, sc) in tried.items() if sc >= target]
+                    q = max(met) if met else min(tried)
+                    results.append({"codec": cand.codec, "quality": q, "kbps": tried[q][0],
+                                    "score": tried[q][1], "met": bool(met), "settings": cand})
+                break
+            except (FFmpegError, OSError, KeyError, ValueError) as e:
+                if not use_vmaf:
+                    raise
+                log(f"VMAF measurement failed, measuring with SSIM instead: {str(e)[-300:]}")
+                use_vmaf = False
+    if not results:
+        raise FFmpegError("No codec could encode this clip: " + "; ".join(skipped))
+    metric = "VMAF" if use_vmaf else "SSIM"
+    met = [r for r in results if r["met"]]
+    best = min(met, key=lambda r: r["kbps"]) if met else max(results, key=lambda r: r["score"])
+    for r in results:
+        # So predicting the size of the picked settings costs nothing.
+        applied = replace(r["settings"], quality=r["quality"], method="autoset")
+        _trial_kbps[_trial_key(src, applied, r["quality"])] = r["kbps"]
+    ten = best["settings"].uses_ten_bit
+    name = CODECS[best["codec"]] + (" 10-bit" if ten else "")
+    word = "CRF" if settings.encoder == "software" else "CQ"
+    dp = 1 if use_vmaf else 2          # SSIM steps are small
+    report = [f"Auto settings: {name} {word} {best['quality']} "
+              f"({metric} {best['score']:.{dp}f}, target {target:.{dp}f}, quality to give up {settings.give_up})"]
+    if not met:
+        report.append("No codec reached the target on the samples; using the closest one.")
+    for r in sorted(results, key=lambda r: r["kbps"]):
+        mark = "  <- picked" if r is best else ("" if r["met"] else "  (missed the target)")
+        report.append(f"  {CODECS[r['codec']]:<5} {word} {r['quality']:>2}: {_kbps_text(r['kbps'])} video, "
+                      f"{metric} {r['score']:.{dp}f}{mark}")
+    if len(met) > 1:
+        runner_up = sorted(met, key=lambda r: r["kbps"])[1]
+        report.append(f"  {name} is {(1 - best['kbps'] / runner_up['kbps']) * 100:.0f}% smaller than "
+                      f"{CODECS[runner_up['codec']]} at the same quality.")
+    report += ["  " + x for x in skipped]
+    chosen = {"codec": best["codec"], "quality": best["quality"], "ten_bit": settings.ten_bit,
+              "kbps": round(best["kbps"], 1), "score": round(best["score"], 2), "metric": metric,
+              "target": target, "met": bool(met), "report": report}
+    _picked[key] = chosen
+    return json.loads(json.dumps(chosen))
+
+
 def resolve_quality(src: Path, info: MediaInfo, settings: EncodeSettings,
                     cancel: CancelToken = None, log=None) -> Tuple[Optional[int], Optional[str]]:
     """Return (quality, method_tag). Fixed CRF -> (n, None); auto -> analysed."""
@@ -480,4 +649,6 @@ def resolve_quality(src: Path, info: MediaInfo, settings: EncodeSettings,
         crf, _metric = estimate_crf_measured(src, info, settings, cancel, log)
         # A target other than the default goes in the name: "CRF21 auto3-95".
         return crf, "auto3" if settings.auto3_target == 93.0 else f"auto3-{settings.auto3_target:g}"
-    return int(settings.quality), None
+    if settings.is_autoset:
+        raise FFmpegError("Auto settings haven't been chosen for this job yet.")
+    return int(settings.quality), (settings.method or None)

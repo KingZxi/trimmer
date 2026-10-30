@@ -5,6 +5,10 @@
 - New: "10-bit colour" option for H.265 and AV1 compression: about 5-10% smaller at the same
   quality, with less banding. Off by default. Hardware encoders are checked before use, and file
   names and the queue show "10-bit".
+- New: "Auto settings, measured" compression method. Each clip is tested with H.265, AV1 and
+  H.264 at several CRFs, and the smallest that keeps the chosen quality is used. "Quality to give
+  up" (0-100) sets the target (VMAF 99 down to 80; 32 = VMAF 93). The queue chooses the settings
+  before it can start and shows what it picked, and how the codecs compared, in the details panel.
 - New: Replay merge has the same "Edit…" button next to the compression preset as Clips.
 - Fixed: H.265 "Target file size" compression failed ("Incomplete CU-tree stats file").
 - Fixed: compressed trims that start partway into a clip (including the second part of a split)

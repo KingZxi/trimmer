@@ -1,6 +1,7 @@
 """Clips tab: drop clips in, preview, mark trims, choose what to save."""
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
@@ -12,7 +13,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
 
 from ..core import ffmpeg as ff
 from ..core import peek
-from ..core.encode import EncodeSettings, predict_size, resolve_quality
+from ..core.encode import EncodeSettings, pick_settings, predict_size, resolve_quality
 from ..core.jobs import ClipJob, JobOptions
 from ..core.render import AUDIO_RIP_FORMATS
 from ..core.util import format_hms, format_hms_ms, format_size, same_file, sanitize_filename
@@ -1028,6 +1029,9 @@ class ClipsTab(QWidget):
                 elif enc.mode == "lossless":
                     total_out += int(part_in * 2)      # rough: lossless is usually larger than OBS output
                 else:
+                    if enc.needs_analysis:     # remembered, so the queue doesn't analyse it again
+                        enc = replace(enc, chosen=pick_settings(e.path, e.info, enc))
+                    enc = enc.applied()
                     q, _ = resolve_quality(e.path, e.info, enc)
                     total_out += predict_size(e.path, e.info, enc, q, kept)
             return total_in, total_out

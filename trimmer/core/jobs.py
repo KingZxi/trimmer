@@ -23,7 +23,8 @@ from typing import Callable, List, Optional, Tuple
 from . import ffmpeg as ff
 from . import merge as mg
 from . import packets as pk
-from .encode import EncodeSettings, can_copy_audio, predict_size, quality_label, resolve_quality, video_codec_args
+from .encode import (EncodeSettings, can_copy_audio, pick_settings, predict_size, quality_label, resolve_quality,
+                     video_codec_args)
 from .ffmpeg import CancelToken, Cancelled, FFmpegError, Progress
 from .render import (AudioPlan, Span, copy_compatible, output_ext, render, rip_audio,
                      snap_spans_to_keyframes, verify_output)
@@ -197,6 +198,8 @@ def job_key(job) -> str:
     from .journal import source_key
     d = job_to_dict(job)
     d.pop("options", None)
+    if isinstance(d.get("encode"), dict):
+        d["encode"] = {k: v for k, v in d["encode"].items() if k != "chosen"}   # same work, analysed or not
     d["_sources"] = [source_key(s) for s in job.sources()]
     d["_out"] = job.options.output_dir
     return hashlib.sha1(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()
@@ -1351,9 +1354,55 @@ def _fallback_session(job, ctx, session: mg.SessionPlan, out_root, merged_name, 
     return outputs
 
 
+def needs_analysis(job) -> bool:
+    """True for a job set to 'Auto settings, measured' that hasn't been analysed yet."""
+    return bool(job.compress and job.make_video and job.encode
+                and EncodeSettings.from_dict(job.encode).needs_analysis)
+
+
+def analysis_source(job) -> str:
+    """The file auto settings samples: the clip, or a merge's longest clip."""
+    if job.kind != "merge":
+        return job.source
+    def length(p):
+        try:
+            return ff.probe(p).duration or 0
+        except (FFmpegError, OSError):
+            return 0
+    return max(job.clip_paths, key=length)
+
+
+def analyse_job(job, cancel: CancelToken = None, log=None, on_step=None) -> dict:
+    """Run the auto settings analysis for a job; returns the `chosen` dict."""
+    src = analysis_source(job)
+    return pick_settings(Path(src), ff.probe(src), EncodeSettings.from_dict(job.encode), cancel, log, on_step)
+
+
+def _apply_auto_settings(job, ctx: JobContext):
+    """A job set to auto settings, with the analysed codec and CRF filled in
+    (analysing now if the queue hasn't already)."""
+    if not (job.compress and job.encode):
+        return job
+    enc = EncodeSettings.from_dict(job.encode)
+    if not enc.is_autoset:
+        return job
+    if not enc.chosen:
+        ctx.stage("Choosing settings")
+        enc.chosen = analyse_job(job, ctx.cancel, ctx.log,
+                                 lambda done, total: ctx.progress("Choosing settings",
+                                                                  Progress(done / total, 0, None, None, None)))
+        for line in enc.chosen["report"]:
+            ctx.log(line)
+    else:
+        ctx.log(enc.chosen["report"][0] if enc.chosen.get("report") else
+                f"Auto settings: {enc.chosen['codec']} CRF {enc.chosen['quality']}")
+    return replace(job, encode=enc.applied().to_dict())
+
+
 def run_job(job, ctx: JobContext) -> JobResult:
     """Run one job; never raises except Cancelled."""
     try:
+        job = _apply_auto_settings(job, ctx)
         if job.kind == "merge":
             return run_merge_job(job, ctx)
         return run_clip_job(job, ctx)

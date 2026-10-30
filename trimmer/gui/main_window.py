@@ -495,6 +495,7 @@ class MainWindow(QMainWindow):
             self.queue.closing = True
             clear_queue()
         self.merge.watcher.stop()
+        self.queue.stop_estimates(wait_ms=5000)
         self.guard.stop()
         # Background look-ups (keyframes, waveform, thumbnails, probes) finish
         # in a moment; a thread destroyed while running can crash on exit.
