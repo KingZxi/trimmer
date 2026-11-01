@@ -1368,6 +1368,7 @@ def test_queue_waits_for_auto_settings():
     assert item.ready and item.job.encode.get("chosen")
     q.table.selectRow(q.items.index(item))
     assert "Auto settings: " in q.log.toPlainText()
+    assert "(chosen by auto settings, give up 70)" in q.log.toPlainText().splitlines()[0]
     assert "(auto settings)" in q.table.item(q.items.index(item), qt.C_SET).text()
     pump(120, lambda: item.status not in ("queued", "running"))
     assert item.status == "done", item.log
@@ -1425,5 +1426,40 @@ def test_queue_menu_edit_custom_compression(monkeypatch):
     monkeypatch.setattr(clips_tab.CustomEncodeDialog, "exec", lambda dlg: False)   # Cancel changes nothing
     q.edit_compression([item])
     assert EncodeSettings.from_dict(item.job.encode).quality == 30
+    q.remove_selected([item])
+    w.close()
+
+
+def test_queue_details_start_with_compression(monkeypatch):
+    """The details panel's first line is the job's compression, and it changes
+    in place when the compression is changed."""
+    from trimmer.core.encode import EncodeSettings
+    from trimmer.core.jobs import ClipJob, JobOptions as JO
+    from trimmer.gui import clips_tab
+    from trimmer.gui import queue_tab as qt
+    src = fx.single_clip(WORK / "src_qline")
+    w = window(WORK / "out_qline")
+    q = w.queue
+    q.auto_start.setChecked(False)
+    mine = EncodeSettings(codec="h264", quality=27, preset="ultrafast", max_height=720).to_dict()
+    q.add_jobs([ClipJob(str(src), compress=True, encode=mine, options=JO(output_dir=str(WORK / "out_qline")))],
+               start=False)
+    item = q.items[-1]
+    q.table.selectRow(q.items.index(item))
+    first = lambda: q.log.toPlainText().splitlines()[0]
+    assert first() == "Compression: H.264 (libx264), CRF 27, preset ultrafast, audio copied, max 720p"
+    q._note(item, ["a note"])
+    monkeypatch.setattr(clips_tab.CustomEncodeDialog, "exec", lambda dlg: (
+        dlg.form.set_settings(EncodeSettings(codec="h265", quality=30, preset="fast", audio="160")) or True))
+    q.edit_compression([item])
+    assert first() == "Compression: H.265 (libx265), CRF 30, preset fast, audio 160 kbps"
+    assert q.log.toPlainText().splitlines()[1:] == ["a note"]
+    q.set_compression([item], None)
+    assert first() == "Compression: none (no re-encode)"
+    chosen = {"codec": "av1", "quality": 35, "ten_bit": True, "report": ["Auto settings: AV1 CRF 35"]}
+    assert "AV1 10-bit (libsvtav1), CRF 35 (chosen by auto settings, give up 32)" in qt.compression_line(
+        ClipJob(str(src), compress=True, encode=EncodeSettings(quality="autoset", chosen=chosen).to_dict()))
+    assert "Auto settings, measured (give up 32)" in qt.compression_line(
+        ClipJob(str(src), compress=True, encode=EncodeSettings(quality="autoset").to_dict()))
     q.remove_selected([item])
     w.close()

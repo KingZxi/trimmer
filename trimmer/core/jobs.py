@@ -1393,6 +1393,7 @@ def _apply_auto_settings(job, ctx: JobContext):
                                                                   Progress(done / total, 0, None, None, None)))
         for line in enc.chosen["report"]:
             ctx.log(line)
+        job.encode = {**job.encode, "chosen": enc.chosen}   # so the queue shows what was chosen
     else:
         ctx.log(enc.chosen["report"][0] if enc.chosen.get("report") else
                 f"Auto settings: {enc.chosen['codec']} CRF {enc.chosen['quality']}")

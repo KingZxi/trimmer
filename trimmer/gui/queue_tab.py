@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QGuiApplication
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QTextCursor
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFrame, QHeaderView,
                                QInputDialog, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
                                QSplitter, QTableWidgetItem, QVBoxLayout, QWidget)
@@ -84,6 +84,52 @@ def describe(job) -> str:
     if isinstance(job, J.ClipJob) and job.rip_video:
         bits.append("Rip video")
     return "  ·  ".join(bits)
+
+
+def compression_line(job) -> str:
+    """First line of the details panel: the compression a job will use, in full."""
+    if not (job.compress and job.encode and (isinstance(job, J.MergeJob) or job.make_video)):
+        if isinstance(job, J.ClipJob) and not job.make_video:
+            how = "no video saved"
+        elif isinstance(job, J.MergeJob):
+            how = {"exact": "frame-exact re-encode", "lossless": "lossless only"}.get(
+                job.options.merge_method, "lossless when possible")
+        else:
+            how = (("smart cut" if job.options.smart_cut else "frame-exact re-encode")
+                   if job.segments and job.options.exact_cuts else "no re-encode")
+        return f"Compression: none ({how})"
+    e = EncodeSettings.from_dict(job.encode)
+    a = e.applied()
+    hw = a.encoder != "software" and a.mode != "lossless"
+    bits = []
+    if e.is_autoset and not e.chosen:
+        bits.append(f"Auto settings, measured (give up {e.give_up}): choosing codec and CRF…")
+        bits.append("hardware " + a.encoder.upper() if a.encoder != "software" else "software")
+    else:
+        codec = {"h264": "H.264", "h265": "H.265", "av1": "AV1"}.get(
+            a.codec, CODECS.get(a.codec, a.codec))
+        bits.append(f"{codec}{' 10-bit' if a.uses_ten_bit else ''} ({a.encoder_name})")
+        if a.mode == "lossless":
+            bits.append("lossless")
+        elif a.mode == "target_size":
+            bits.append(f"target size {a.target_size_mb:g} MB")
+        elif a.is_auto:
+            bits.append("Auto 2" if a.quality == "auto2" else f"Auto 3 (target {a.auto3_target:g})")
+        else:
+            bits.append(f"{'CQ' if hw else 'CRF'} {a.quality}")
+        if e.is_autoset:
+            bits[-1] += f" (chosen by auto settings, give up {e.give_up})"
+    bits.append(f"preset {a.preset}")
+    bits.append("audio copied" if a.audio == "copy" else f"audio {a.audio} kbps")
+    if a.max_height:
+        bits.append(f"max {a.max_height}p")
+    if a.max_fps:
+        bits.append(f"max {a.max_fps:g} fps")
+    if a.keyframe_interval:
+        bits.append(f"keyframe every {a.keyframe_interval:g} s")
+    if a.revert_if_larger:
+        bits.append("keep original if larger")
+    return "Compression: " + ", ".join(bits)
 
 
 def default_name(job, settings) -> str:
@@ -238,6 +284,7 @@ class QueueTab(QWidget):
             self.table.setColumnWidth(c, w)
         self.table.itemSelectionChanged.connect(self._selection)
         split.addWidget(self.table)
+        self._shown, self._shown_line = None, ""     # job in the details panel, its first line
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setFrameShape(QFrame.NoFrame)
@@ -429,6 +476,7 @@ class QueueTab(QWidget):
                         + ")"))
         self.table.setItem(r, C_DEL, d)
         self.table.blockSignals(was_blocked)
+        self._show_compression(item)
         bar = self.table.cellWidget(r, C_BAR)
         if bar:
             if item.status == "running" and item.fraction is None:
@@ -715,10 +763,28 @@ class QueueTab(QWidget):
     def _selection(self):
         sel = self._selected()
         self.log.clear()
+        self._shown = None
         if len(sel) == 1:
-            self.log.setPlainText("\n".join(sel[0].log))
+            self._shown, self._shown_line = sel[0], compression_line(sel[0].job)
+            self.log.setPlainText("\n".join([self._shown_line] + sel[0].log))
         self._selection_size(sel)
         self._buttons()
+
+    def _show_compression(self, item):
+        """Keep the details panel's first line in step with the job's compression
+        (changed from the menu, or chosen by auto settings)."""
+        if item is not self._shown:
+            return
+        line = compression_line(item.job)
+        if line == self._shown_line:
+            return
+        self._shown_line = line
+        bar = self.log.verticalScrollBar()
+        at = bar.value()
+        cur = QTextCursor(self.log.document().firstBlock())
+        cur.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
+        cur.insertText(line)
+        bar.setValue(at)
 
     def _selection_size(self, sel=None):
         """Bottom-left: total size of the selected jobs' originals and outputs."""
@@ -913,6 +979,7 @@ class QueueTab(QWidget):
         self.items[:] = [i for i in self.items if i.status in ("queued", "running")]
         self._rebuild()
         self.log.clear()
+        self._shown = None
 
     # --------------------------------------------------------- right-click
     def _menu(self, pos):
