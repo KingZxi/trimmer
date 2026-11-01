@@ -150,10 +150,10 @@ class FramePlayer(QObject):
                 path, ms = self._want
                 self._want = None
             try:
-                out = subprocess.run(
+                out = ff.run_bytes(
                     [ff.ffmpeg_bin(), "-v", "error", "-ss", f"{ms / 1000:.3f}", "-i", path,
                      "-frames:v", "1", "-vf", "scale=-2:540", "-f", "image2pipe", "-c:v", "mjpeg", "-"],
-                    capture_output=True, timeout=20, creationflags=ff._NO_WINDOW)
+                    timeout=20)
                 data = out.stdout
             except (OSError, subprocess.TimeoutExpired):
                 data = b""

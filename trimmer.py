@@ -32,6 +32,8 @@ def main():
         except (AttributeError, OSError):
             pass
     app = QApplication(sys.argv)
+    from trimmer.core import ffmpeg as ff
+    app.aboutToQuit.connect(ff.shutdown)    # no ffmpeg may keep running once Trimmer quits
     from trimmer import __version__
     app.setApplicationName("Trimmer")
     app.setApplicationVersion(__version__)

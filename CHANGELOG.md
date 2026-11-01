@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: ffmpeg could keep running (with high CPU) after Trimmer closed, most often a quality
+  trial for "Auto settings, measured" / Auto 3 that was still testing a waiting clip. Cancelling
+  now stops those trials at once, closing Trimmer ends every ffmpeg it started, and on Windows
+  each ffmpeg is tied to Trimmer so it ends too if Trimmer crashes or is ended from Task Manager.
+
 ## 1.1.0 (2026-10-30)
 
 - New: "10-bit colour" option for H.265 and AV1 compression: about 5-10% smaller at the same

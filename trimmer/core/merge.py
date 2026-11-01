@@ -20,7 +20,6 @@ import array
 import datetime as dt
 import math
 import re
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -207,7 +206,7 @@ def extract_audio_samples(path: Path, start: float, duration: float, sample_rate
            "-i", str(path), "-map", "0:a:0", "-vn", "-ac", "1", "-ar", str(sample_rate),
            "-f", "s16le", "-"]
     try:
-        out = subprocess.run(cmd, capture_output=True, creationflags=ff._NO_WINDOW)
+        out = ff.run_bytes(cmd, cancel=cancel)
     except FileNotFoundError:
         return None
     if out.returncode != 0 or not out.stdout:

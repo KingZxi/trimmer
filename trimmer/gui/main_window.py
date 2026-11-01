@@ -503,5 +503,8 @@ class MainWindow(QMainWindow):
             if t.isRunning():
                 t.wait(3000)
         self.clips.player.stop()
+        # Anything still running (a look-up that didn't finish in time, a
+        # quality trial) is ended now, so no ffmpeg keeps going after Trimmer.
+        ff.kill_all()
         self.settings.save()
         e.accept()

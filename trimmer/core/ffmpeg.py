@@ -8,6 +8,7 @@ it works the same from the GUI's worker thread and from the CLI.
 Only local ffmpeg/ffprobe executables are ever run. No network access.
 """
 
+import atexit
 import json
 import os
 import queue
@@ -71,16 +72,178 @@ def tools_available() -> List[str]:
     return missing
 
 
-def run_quiet(cmd, cwd=None, timeout=None) -> subprocess.CompletedProcess:
-    """subprocess.run with captured output and no console window."""
-    return subprocess.run(cmd, capture_output=True, text=True, cwd=cwd,
-                          timeout=timeout, creationflags=_NO_WINDOW,
-                          encoding="utf-8", errors="replace")
+# --------------------------------------------------------------------------
+# Child processes: every ffmpeg/ffprobe Trimmer starts is tracked, so none
+# can outlive the app. Closing Trimmer kills whatever is still running, and
+# on Windows each one is also put in a "kill on close" job object, so even
+# if Trimmer crashes or is ended from Task Manager, Windows ends them too.
+# --------------------------------------------------------------------------
+
+_children_lock = threading.Lock()
+_children: set = set()
+_closing = False            # set on quit: no new processes after that
+_job = None                 # Windows job object handle (0 = unavailable)
 
 
-def run_bytes(cmd, timeout=None) -> subprocess.CompletedProcess:
+def _windows_job():
+    """A job object that kills every process in it when Trimmer's last handle
+    to it closes, which Windows does when Trimmer exits for any reason."""
+    global _job
+    if _job is not None:
+        return _job
+    _job = 0
+    try:
+        import ctypes
+
+        class BasicLimits(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                        ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", ctypes.c_uint32),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", ctypes.c_uint32),
+                        ("Affinity", ctypes.c_size_t),
+                        ("PriorityClass", ctypes.c_uint32),
+                        ("SchedulingClass", ctypes.c_uint32)]
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_uint64) for n in
+                        ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                         "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class ExtendedLimits(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", BasicLimits),
+                        ("IoInfo", IoCounters),
+                        ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateJobObjectW.restype = ctypes.c_void_p
+        k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+        k32.SetInformationJobObject.restype = ctypes.c_int
+        k32.SetInformationJobObject.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        k32.AssignProcessToJobObject.restype = ctypes.c_int
+        k32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            return 0
+        info = ExtendedLimits()
+        info.BasicLimitInformation.LimitFlags = 0x2000          # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):
+            return 0                                            # 9 = JobObjectExtendedLimitInformation
+        _job = (k32, job)       # never closed by us: Windows closes it when Trimmer exits
+    except (AttributeError, OSError, ValueError):
+        _job = 0
+    return _job
+
+
+def _spawn(cmd, **kwargs) -> subprocess.Popen:
+    """Start a tracked child process (no console window on Windows)."""
+    if _closing:
+        raise Cancelled()
+    process = subprocess.Popen(cmd, creationflags=_NO_WINDOW, **kwargs)
+    if sys.platform == "win32":
+        job = _windows_job()
+        if job:
+            try:
+                job[0].AssignProcessToJobObject(job[1], int(process._handle))
+            except (AttributeError, OSError, ValueError):
+                pass
+    with _children_lock:
+        for p in [p for p in _children if p.returncode is not None]:
+            _children.discard(p)
+        _children.add(process)
+    if _closing:                # quit started while it was starting
+        _kill(process)
+    return process
+
+
+def _forget(process):
+    with _children_lock:
+        _children.discard(process)
+
+
+def _kill(process):
+    try:
+        _suspend(process, False)            # a paused (frozen) process must be thawed first
+        process.kill()
+    except OSError:
+        pass
+
+
+def kill_all() -> int:
+    """Kill every ffmpeg/ffprobe Trimmer started that is still running.
+    Returns how many were still running."""
+    with _children_lock:
+        procs = [p for p in _children if p.returncode is None and p.poll() is None]
+    for p in procs:
+        _kill(p)
+    return len(procs)
+
+
+def shutdown():
+    """On quit: kill everything still running and start nothing new."""
+    global _closing
+    _closing = True
+    kill_all()
+
+
+atexit.register(shutdown)
+
+
+def _run(cmd, text: bool, cwd=None, timeout=None, cancel: "CancelToken" = None) -> subprocess.CompletedProcess:
+    """subprocess.run, but tracked, and stopped at once when `cancel` is
+    cancelled (raises Cancelled) instead of running on to the end."""
+    empty = "" if text else b""
+    try:
+        process = _spawn(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         stdin=subprocess.DEVNULL, cwd=cwd,
+                         **(dict(text=True, encoding="utf-8", errors="replace") if text else {}))
+    except Cancelled:
+        if cancel is not None:
+            raise
+        return subprocess.CompletedProcess(cmd, 1, empty, "Trimmer is closing" if text else b"Trimmer is closing")
+    if cancel is not None:
+        cancel.register(process)            # so Pause can freeze it too
+    deadline = None if timeout is None else time.monotonic() + timeout
+    try:
+        while True:
+            wait = 0.2 if cancel is not None else None
+            if deadline is not None:
+                left = max(0.0, deadline - time.monotonic())
+                wait = left if wait is None else min(wait, left)
+            try:
+                out, err = process.communicate(timeout=wait)
+                break
+            except subprocess.TimeoutExpired:
+                if cancel is not None and cancel.cancelled:
+                    _kill(process)
+                    process.communicate()
+                    raise Cancelled()
+                if deadline is not None and time.monotonic() >= deadline:
+                    _kill(process)
+                    process.communicate()
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+    finally:
+        if cancel is not None:
+            cancel.unregister(process)
+        if process.poll() is None:          # e.g. an exception while waiting
+            _kill(process)
+            process.wait()
+        _forget(process)
+    return subprocess.CompletedProcess(cmd, process.returncode, out, err)
+
+
+def run_quiet(cmd, cwd=None, timeout=None, cancel: "CancelToken" = None) -> subprocess.CompletedProcess:
+    """subprocess.run with captured text output and no console window."""
+    return _run(cmd, True, cwd=cwd, timeout=timeout, cancel=cancel)
+
+
+def run_bytes(cmd, timeout=None, cancel: "CancelToken" = None) -> subprocess.CompletedProcess:
     """Like run_quiet but stdout/stderr stay raw bytes (PCM, images)."""
-    return subprocess.run(cmd, capture_output=True, timeout=timeout, creationflags=_NO_WINDOW)
+    return _run(cmd, False, timeout=timeout, cancel=cancel)
 
 
 class FFmpegError(RuntimeError):
@@ -457,11 +620,10 @@ def run_ffmpeg(args: List[str], duration: float, on_progress: ProgressCallback =
     try:
         with open(stderr_log, "w", encoding="utf-8", errors="replace") as errfile:
             try:
-                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errfile,
-                                           stdin=subprocess.DEVNULL, cwd=cwd,
-                                           creationflags=_NO_WINDOW,
-                                           text=True, encoding="utf-8", errors="replace",
-                                           bufsize=1)
+                process = _spawn(cmd, stdout=subprocess.PIPE, stderr=errfile,
+                                 stdin=subprocess.DEVNULL, cwd=cwd,
+                                 text=True, encoding="utf-8", errors="replace",
+                                 bufsize=1)
             except FileNotFoundError:
                 raise FFmpegError("ffmpeg was not found. Install ffmpeg or set its folder in Settings.")
             if cancel is not None:
@@ -545,6 +707,7 @@ def run_ffmpeg(args: List[str], duration: float, on_progress: ProgressCallback =
         # errfile is closed from here on, so deleting files is safe on Windows.
         if cancel is not None:
             cancel.unregister(process)
+        _forget(process)
 
         if cancelled:
             if output_path is not None:
@@ -573,7 +736,7 @@ def run_checked(args: List[str], cwd=None, cancel: CancelToken = None) -> subpro
     FFmpegError with ffmpeg's real error text on failure."""
     if cancel is not None:
         cancel.check()
-    out = run_quiet([ffmpeg_bin(), "-hide_banner"] + list(args), cwd=cwd)
+    out = run_quiet([ffmpeg_bin(), "-hide_banner"] + list(args), cwd=cwd, cancel=cancel)
     if cancel is not None:
         cancel.check()
     if out.returncode != 0:
