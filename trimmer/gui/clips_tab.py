@@ -18,6 +18,7 @@ from ..core.jobs import ClipJob, JobOptions
 from ..core.render import AUDIO_RIP_FORMATS
 from ..core.util import format_hms, format_hms_ms, format_size, same_file, sanitize_filename
 from .queue_checks import check_new_jobs
+from .audio_device import follow_default_output
 from .theme import set_kind
 from .widgets import (OWN_TIP, STAR, EncodeForm, FullScreen, HintTable, OptionBinding, Timeline, TrackPicker, card,
                       clean_opts,
@@ -171,6 +172,7 @@ class ClipsTab(QWidget):
         if QAudioOutput is not None:
             self.audio_out = QAudioOutput(self)
             self.player.setAudioOutput(self.audio_out)
+            follow_default_output(self.audio_out)     # don't stay on the device it started on
         self.player.setVideoOutput(self.video)
         self.player.positionChanged.connect(self._pos_changed)
         self.player.durationChanged.connect(lambda d: self.timeline.set_state(duration=d / 1000))

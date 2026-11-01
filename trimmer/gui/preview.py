@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QDialog, QPushButton, QVBoxLayout, QWidget
 
 from ..core import peek
 from ..core.util import format_hms_ms
+from .audio_device import follow_default_output
 from .theme import set_kind
 from .widgets import FullScreen, Timeline, TrackPicker, card, hbox, label
 from .worker import Task
@@ -63,6 +64,7 @@ class PreviewDialog(QDialog):
         if QAudioOutput is not None:
             self.audio_out = QAudioOutput(self)
             self.player.setAudioOutput(self.audio_out)
+            follow_default_output(self.audio_out)     # don't stay on the device it started on
         self.player.setVideoOutput(self.video)
 
         self.timeline = Timeline()
