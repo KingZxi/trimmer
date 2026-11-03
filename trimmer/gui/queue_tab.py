@@ -33,6 +33,17 @@ WHEN_DONE = [("Do nothing", "nothing"), ("Open the output folder", "open"), ("Pu
 
 
 # ------------------------------------------------------------------ helpers
+def gap_note(result, short=False) -> str:
+    """The source problems a finished job reported (frame gaps it kept), in one line."""
+    w = getattr(result, "warnings", None) or []
+    if not w:
+        return ""
+    first = w[0].split(" (", 1)[0] if short else w[0]
+    if short:
+        first = "source gap " + first.split(": ", 1)[1].replace(" with no frames", "")
+    return first + (f" (+{len(w) - 1} more)" if len(w) > 1 else "")
+
+
 def describe(job) -> str:
     """One-line summary of what a job will do."""
     bits = []
@@ -358,7 +369,8 @@ class QueueTab(QWidget):
         if item is None:
             return ""
         text = "Waiting (paused)" if item.status == "queued" and self.paused else STATUS_TEXT.get(item.status, item.status)
-        return "Queue: " + text
+        gaps = gap_note(item.result, short=True) if item.status in ("done", "reverted") else ""
+        return "Queue: " + text + (f" ({gaps})" if gaps else "")
 
     # ---------------------------------------------------------------- rows
     def add_jobs(self, jobs, start=True):
@@ -461,7 +473,11 @@ class QueueTab(QWidget):
             left.append(item.analysis)
         elif item.result is not None and item.result.messages and item.status in ("failed", "skipped"):
             left.append(item.result.messages[0].splitlines()[0][:160])
-        self._cell(r, C_DETAIL, "  ·  ".join(left))
+        elif item.result is not None and item.status in ("done", "reverted") and gap_note(item.result):
+            left.append(gap_note(item.result)[:160])
+        self._cell(r, C_DETAIL, "  ·  ".join(left),
+                   "\n".join(item.result.warnings) if left and item.result is not None
+                   and item.status in ("done", "reverted") and item.result.warnings else None)
         self._cell(r, C_SIZE, self._size_text(item))
         d = QTableWidgetItem("")
         flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable

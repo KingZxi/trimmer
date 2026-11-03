@@ -1096,6 +1096,27 @@ def test_queue_status_in_notes():
     w.close()
 
 
+def test_source_gap_shows_in_notes_and_queue_details():
+    """A job on footage with a gap in its frames finishes, and the gap shows in Notes and the queue."""
+    import re
+    from trimmer.gui.queue_tab import C_DETAIL
+    clip = fx.gap_clip(WORK / "gapn_src")
+    w = window(WORK / "gapn_out")
+    w.queue.auto_start.setChecked(False)
+    w._route([str(clip)])
+    pump(15, lambda: w.clips.entries)
+    c = w.clips
+    notes = lambda: c.table.item(0, c.table.columnCount() - 1).text()
+    c.queue(selected_only=False)
+    w.queue.start()
+    pump(240, lambda: finished(w))
+    pump(5, lambda: notes().startswith("Queue: Done"))
+    assert re.fullmatch(r"Queue: Done \(source gap 2\.5\ds at 0:0[78]\.\d{3}\)", notes()), notes()
+    detail = w.queue.table.item(0, C_DETAIL)
+    assert detail.text().startswith("Gap already in the source: 2.5") and "Gap clip.mkv" in detail.text()
+    w.close()
+
+
 def test_queue_deletes_an_original_only_after_every_job_using_it():
     from trimmer.core.jobs import ClipJob
     from trimmer.gui.worker import QueueItem, QueueRunner

@@ -139,3 +139,37 @@ def sync_replays(folder: Path):
                 "-metadata:s:a:0", "handler_name=Mic", "-metadata:s:a:1", "handler_name=Desktop", str(p))
         paths.append(p)
     return paths
+
+
+def gap_clip(folder: Path, seconds=20, gap=(8.0, 10.5), name="Gap clip.mkv") -> Path:
+    """A clip whose picture stops for a while (no frames from gap[0] to
+    gap[1]) while the sound runs on, like a recording that dropped frames
+    when the game stalled. MKV keeps the gap through a re-encode (an MP4
+    output is evened out to a constant frame rate)."""
+    folder.mkdir(parents=True, exist_ok=True)
+    p = folder / name
+    if p.exists():
+        return p
+    a, b = gap
+    run("-f", "lavfi", "-i", f"testsrc2=s=320x180:r=30:d={seconds},select='not(between(t,{a},{b - 0.001}))'",
+        "-f", "lavfi", "-i", f"sine=f=440:r=48000:d={seconds}",
+        "-map", "0:v", "-map", "1:a", "-fps_mode", "passthrough",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-g", "60", "-bf", "2",
+        "-c:a", "aac", "-b:a", "128k", str(p))
+    return p
+
+
+def gap_replays(folder: Path):
+    """Two replays of one session cut by stream copy from a gap clip
+    (0-12 and 6-20), so they share packets and the gap (8-10.5 s) is in
+    both."""
+    folder.mkdir(parents=True, exist_ok=True)
+    src = gap_clip(folder.parent, name="Gap stream.mkv")
+    paths = []
+    for s, e in ((0, 12), (6, 20)):
+        p = folder / replay_name(s, ".mkv")
+        if not p.exists():
+            run("-ss", str(s), "-i", str(src), "-t", str(e - s), "-map", "0", "-c", "copy",
+                "-avoid_negative_ts", "make_zero", str(p))
+        paths.append(p)
+    return paths

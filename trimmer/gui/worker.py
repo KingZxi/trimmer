@@ -222,6 +222,8 @@ class QueueRunner(QThread):
                         "skipped": "skipped", "failed": "; ".join(res.messages)[:200]}.get(res.status, res.status)
                 if res.in_bytes and res.out_bytes:
                     text += f"   {format_size(res.in_bytes)} -> {format_size(res.out_bytes)}"
+                if res.warnings:
+                    text += "   " + "; ".join(res.warnings)
                 runlog.record(item.job.title, res.status, text, res.in_bytes, res.out_bytes)
             except Cancelled:
                 item.status = "cancelled"

@@ -215,6 +215,7 @@ class JobResult:
     deleted: List[str] = field(default_factory=list)
     deleted_bytes: int = 0                # size of the originals that were really removed
     deferred: List[str] = field(default_factory=list)   # originals a later queued job still needs
+    warnings: List[str] = field(default_factory=list)   # problems in the sources that didn't stop the job
     rip_from: str = ""                    # saved video still holding every source audio track untouched
     source_count: int = 0                 # clips this job read (a merge counts every replay)
 
@@ -236,6 +237,7 @@ class JobContext:
         # Asks whoever runs the job to let go of these files (close previews) before they're deleted.
         self.release: Callable[[List[Path]], None] = lambda paths: None
         self.skipped: List[str] = []      # outputs skipped by the name-clash policy
+        self.warnings: List[str] = []     # source problems reported, not failed (frame gaps)
         self._sticky = None
 
     def stage(self, text: str):
@@ -408,18 +410,134 @@ def check_copy_trim(source: Path, out: Path, want_start: float, want_end: float)
     return None
 
 
-def check_frames(out: Path, expected_duration: float, fps: float) -> Optional[str]:
+def _gap_limit(fps: float) -> float:
+    """A stretch with no frames longer than this counts as a gap."""
+    return max(0.25, 4.0 / fps) if fps else 0.25
+
+
+def frame_gaps(path: Path, fps: float, start_time: float = 0.0, cancel: CancelToken = None,
+               limit: float = None) -> List[Tuple[float, float]]:
+    """(time, length) of every stretch of the file with no frames, times
+    counted from start_time (the file's own start)."""
+    pts = pk.read_pts(path, cancel)
+    limit = _gap_limit(fps) if limit is None else limit
+    return [(a - start_time, b - a) for a, b in zip(pts, pts[1:]) if b - a > limit]
+
+
+# A source window: (file, its info, start, stop), in seconds from the file's
+# start, laid end to end in the output in this order.
+Window = Tuple[Path, object, float, float]
+
+
+def _span_windows(spans: List[Span]) -> List[Window]:
+    return [(s.path, s.info, s.start, s.stop) for s in spans]
+
+
+def _piece_windows(pj: pk.PacketJoin) -> List[Window]:
+    """The packet join's pieces as windows, each as long as total_duration counts it."""
+    out = []
+    for p in pj.pieces:
+        if p.duration is not None:
+            stop = p.duration
+        elif p.stop is not None and p.stop < len(p.video):
+            stop = p.video.pts[p.stop] - p.clip.info.start_time
+        else:
+            stop = p.clip.duration
+        out.append((p.clip.path, p.clip.info, 0.0, stop))
+    return out
+
+
+@dataclass
+class SourceGap:
+    at: float               # where it is in the output
+    length: float
+    source: Path
+    source_at: float        # where it is in the source file
+
+    def describe(self) -> str:
+        return (f"Gap already in the source: {self.length:.2f}s with no frames at {format_hms_ms(self.at)} "
+                f"({self.source.name} at {format_hms_ms(self.source_at)})")
+
+
+def source_gaps(windows: List[Window], fps: float, cancel: CancelToken = None) -> List[SourceGap]:
+    """The frame gaps the sources already have inside the parts that are
+    used, placed on the output's timeline."""
+    limit = _gap_limit(fps) / 2         # a bit lower, so a gap just under the limit still explains one
+    found, offset = [], 0.0
+    for path, info, start, stop in windows:
+        if info.has_video:
+            for a, g in frame_gaps(path, fps, info.start_time, cancel, limit):
+                lo, hi = max(a, start), min(a + g, stop)
+                if hi - lo > limit:
+                    found.append(SourceGap(offset + lo - start, hi - lo, Path(path), a))
+        offset += max(0.0, stop - start)
+    return found
+
+
+def check_frames(out: Path, expected_duration: float, fps: float, sources: List[Window] = None,
+                 found: List[SourceGap] = None, cancel: CancelToken = None) -> Optional[str]:
     """For re-encoded outputs: the frame count must match the duration (no
-    missing stretch) and timestamps must have no gaps."""
-    pl = pk.read_packets(out, "video")
-    if not pl.pts or not fps:
+    missing stretch) and timestamps must have no gaps. A gap the sources
+    already had at that place (given as windows) is no fault of the output:
+    it is added to `found` instead."""
+    if not fps:
         return None
-    pts = sorted(p for p in pl.pts if p == p)
-    gaps = [(a, b - a) for a, b in zip(pts, pts[1:]) if b - a > max(0.25, 4.0 / fps)]
-    if gaps:
-        a, g = gaps[0]
-        return f"output has a {g:.2f}s gap in its frames at {format_hms_ms(a)}"
+    try:
+        start = ff.probe(out, use_cache=False).start_time
+    except FFmpegError:
+        start = 0.0
+    gaps = frame_gaps(out, fps, start, cancel)
+    if not gaps:
+        return None
+    known = source_gaps(sources, fps, cancel) if sources else []
+    slack = max(0.1, 3.0 / fps)
+    for a, g in gaps:
+        match = next((k for k in known if abs(a - k.at) <= 0.5 + slack and g <= k.length + slack), None)
+        if match is None:
+            if sources:
+                return f"output has a {g:.2f}s gap in its frames at {format_hms_ms(a)} that isn't in the source"
+            return f"output has a {g:.2f}s gap in its frames at {format_hms_ms(a)}"
+        known.remove(match)
+        if found is not None:
+            found.append(SourceGap(a, g, match.source, match.source_at))
     return None
+
+
+def _report_gaps(ctx, gaps: List[SourceGap]):
+    for gap in gaps:
+        text = gap.describe()
+        if text not in ctx.warnings:        # a hidden build for rips finds the same ones again
+            ctx.log(f"{text}. The picture holds still there in the output too, as it did in the source.")
+            ctx.warnings.append(text)
+
+
+def _note_source_gaps(ctx, windows: List[Window], fps: float):
+    """For outputs that copy the source frames: report the gaps they carry."""
+    try:
+        _report_gaps(ctx, source_gaps(windows, fps or 60.0, ctx.cancel))
+    except (FFmpegError, OSError, ValueError) as e:
+        ctx.log(f"Couldn't check the source for gaps in its frames: {e}")
+
+
+def _verify_frames(ctx, part: Path, total: float, fps: float, windows: List[Window], what: str):
+    """check_frames for an encoded output; a gap from the source is reported, any other fails it."""
+    found: List[SourceGap] = []
+    problem = check_frames(part, total, fps, windows, found, ctx.cancel)
+    if problem:
+        safe_unlink(part)
+        raise FFmpegError(f"{what} failed verification: {problem}")
+    _report_gaps(ctx, found)
+
+
+def _gap_section(gaps: List[str]) -> str:
+    """The source gaps as a section for an info file ("" when there are none)."""
+    gaps = list(dict.fromkeys(gaps))
+    if not gaps:
+        return ""
+    lines = ["", "Gaps already in the source", "--------------------------",
+             "The source footage has no frames for these stretches (it was recorded that way), so the",
+             "picture holds still there while the sound plays on. The output keeps them as they are.", ""]
+    return "\n".join(lines + [f"  {g.split(': ', 1)[1]}" for g in gaps]) + "\n"
 
 
 # --------------------------------------------------------------------------
@@ -523,11 +641,11 @@ def _write_video(job: ClipJob, ctx: JobContext, info, spans: List[Span], out_dir
         expected = kept
         n_audio = _n_out_audio(audio, len(info.audio))
         ctx.stage("Verifying")
-        problem = verify_output(part, expected, True, n_audio) or check_frames(
-            part, expected, info.fps)
+        problem = verify_output(part, expected, True, n_audio)
         if problem:
             safe_unlink(part)
             raise FFmpegError(f"Output failed verification: {problem}")
+        _verify_frames(ctx, part, expected, info.fps, _span_windows(spans), "Output")
         _finish(part, final, src)
         return final
 
@@ -570,6 +688,7 @@ def _write_smart(job: ClipJob, ctx, info, spans: List[Span], final: Path,
         safe_unlink(part)
         ctx.log(f"Smart cut output failed verification ({problem}); re-encoding the trim instead.")
         return None
+    _note_source_gaps(ctx, _span_windows(spans), info.fps)
     _finish(part, final, src)
     return final
 
@@ -606,6 +725,7 @@ def _write_copy(job: ClipJob, ctx, info, spans: List[Span], final: Path, audio: 
     if problem:
         safe_unlink(part)
         raise FFmpegError(f"Output failed verification: {problem}")
+    _note_source_gaps(ctx, _span_windows(spans), info.fps)
     _finish(part, final, src)
     return final
 
@@ -959,6 +1079,7 @@ def _packet_session(job, ctx, session, pj: pk.PacketJoin, out_root, merged_name,
     ext = output_ext(first.path, opts.container)
     srcs = [c.path for c in session.clips]
     outputs = []
+    mark = len(ctx.warnings)
     with tempfile.TemporaryDirectory(prefix="trimmer_join_") as td:
         if opts.merge_mode == "trim":
             folder = out_root / folder_name
@@ -974,13 +1095,15 @@ def _packet_session(job, ctx, session, pj: pk.PacketJoin, out_root, merged_name,
                                               trim=trim))
                 written.append((p.clip, outputs[-1].name, kept_s))
             if opts.generate_clip_log:
-                _write_text(folder / "info.txt", _packet_log(session, pj, written, trim_mode=True))
+                _write_text(folder / "info.txt", _packet_log(session, pj, written, trim_mode=True)
+                            + _gap_section(ctx.warnings[mark:]))
             return outputs
         out = _packet_output(job, ctx, pj, out_root, merged_name, ext, enc, audio, srcs, Path(td),
                              stage="Merging")
         outputs.append(out)
         if opts.generate_clip_log:
-            _write_text(out.with_name(f"{out.stem} - info.txt"), _packet_log(session, pj, None, False))
+            _write_text(out.with_name(f"{out.stem} - info.txt"), _packet_log(session, pj, None, False)
+                        + _gap_section(ctx.warnings[mark:]))
         _log_splices_packets(ctx, pj)
         return outputs
 
@@ -1060,6 +1183,7 @@ def _packet_output(job, ctx, pj: pk.PacketJoin, folder: Path, stem: str, ext: st
             safe_unlink(part)
             raise FFmpegError(f"Merge failed the nothing-lost check: {problem}")
         ctx.log("Nothing-lost check passed: every source frame is in the output exactly once.")
+        _note_source_gaps(ctx, _piece_windows(pj), info.fps)
     else:
         # Encode straight from the exact packet join: one pass, frame exact.
         e = enc or EncodeSettings.from_dict(EXACT_SETTINGS.to_dict())
@@ -1112,10 +1236,11 @@ def _packet_output(job, ctx, pj: pk.PacketJoin, folder: Path, stem: str, ext: st
         if not r.ok:
             raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
         ctx.stage("Verifying")
-        problem = verify_output(part, total, True, len(out_tracks)) or check_frames(part, total, info.fps)
+        problem = verify_output(part, total, True, len(out_tracks))
         if problem:
             safe_unlink(part)
             raise FFmpegError(f"Output failed verification: {problem}")
+        _verify_frames(ctx, part, total, info.fps, _piece_windows(pj), "Output")
     _finish(part, final, pj.pieces[-1].clip.path)
     ctx.log(f"Saved {final.name}")
     return final
@@ -1202,6 +1327,7 @@ def _fallback_session(job, ctx, session: mg.SessionPlan, out_root, merged_name, 
     first = kept[0]
     ext = output_ext(first.path, opts.container)
     outputs = []
+    mark = len(ctx.warnings)
 
     if opts.merge_mode == "trim":
         folder = out_root / folder_name
@@ -1260,12 +1386,14 @@ def _fallback_session(job, ctx, session: mg.SessionPlan, out_root, merged_name, 
             if problem:
                 safe_unlink(part)
                 raise FFmpegError(f"{c.path.name} failed verification: {problem}")
+            _note_source_gaps(ctx, _span_windows([span]), c.info.fps)
             _finish(part, final, c.path)
             outputs.append(final)
             written.append((c, final.name, span.start))
             ctx.log(f"Saved {final.name}")
         if opts.generate_clip_log:
-            _write_text(folder / "info.txt", mg.clip_log_for_trim(session, written, mopts))
+            _write_text(folder / "info.txt", mg.clip_log_for_trim(session, written, mopts)
+                        + _gap_section(ctx.warnings[mark:]))
         return outputs
 
     # Merge into one video.
@@ -1337,11 +1465,14 @@ def _fallback_session(job, ctx, session: mg.SessionPlan, out_root, merged_name, 
     if not r.ok:
         raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
     ctx.stage("Verifying")
-    problem = verify_output(part, total, True, None) or (
-        check_frames(part, total, first.info.fps) if use_enc is not None else None)
+    problem = verify_output(part, total, True, None)
     if problem:
         safe_unlink(part)
         raise FFmpegError(f"Merge failed verification: {problem}")
+    if use_enc is not None:
+        _verify_frames(ctx, part, total, first.info.fps, _span_windows(spans), "Merge")
+    else:
+        _note_source_gaps(ctx, _span_windows(spans), first.info.fps)
     _finish(part, final, kept[-1].path)
     ctx.log(f"Saved {final.name}")
     outputs.append(final)
@@ -1350,7 +1481,8 @@ def _fallback_session(job, ctx, session: mg.SessionPlan, out_root, merged_name, 
         pos += c.duration - t
         ctx.log(f"Join at {format_hms_ms(pos)}: {c.path.name} -> {nxt.path.name}")
     if opts.generate_clip_log:
-        _write_text(final.with_name(f"{final.stem} - info.txt"), mg.clip_log_for_merge(session, cuts, mopts))
+        _write_text(final.with_name(f"{final.stem} - info.txt"), mg.clip_log_for_merge(session, cuts, mopts)
+                    + _gap_section(ctx.warnings[mark:]))
     return outputs
 
 
@@ -1404,9 +1536,9 @@ def run_job(job, ctx: JobContext) -> JobResult:
     """Run one job; never raises except Cancelled."""
     try:
         job = _apply_auto_settings(job, ctx)
-        if job.kind == "merge":
-            return run_merge_job(job, ctx)
-        return run_clip_job(job, ctx)
+        res = run_merge_job(job, ctx) if job.kind == "merge" else run_clip_job(job, ctx)
+        res.warnings = list(dict.fromkeys(ctx.warnings))
+        return res
     except Cancelled:
         raise
     except _Skip as e:

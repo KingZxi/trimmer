@@ -111,6 +111,21 @@ def read_packets(path, kind: str = "video", cancel: CancelToken = None) -> Packe
     return pl
 
 
+_pts_cache: Dict[tuple, List[float]] = {}
+
+
+def read_pts(path, cancel: CancelToken = None) -> List[float]:
+    """Presentation times of the first video stream's packets, sorted (no
+    fingerprints, so much quicker than read_packets on a long file)."""
+    path = Path(path)
+    key = (str(path.resolve()), path.stat().st_mtime, path.stat().st_size)
+    if key not in _pts_cache:
+        if cancel:
+            cancel.check()
+        _pts_cache[key] = sorted(r[0] for r in _probe_packets(path, "v:0", with_hash=False) if r[0] == r[0])
+    return _pts_cache[key]
+
+
 MIN_RUN = 30   # packets that must match in a row before a candidate is examined
 
 

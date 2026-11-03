@@ -988,3 +988,74 @@ def test_auto3_size_prediction_reuses_its_trials(work, monkeypatch):
         raise AssertionError("predict_size encoded again")
     monkeypatch.setattr(en, "_encode_kbps", no_encode)
     assert en.predict_size(src, info, s, crf, info.duration) > 0
+
+
+# ------------------------------------------------- gaps already in the source
+
+def test_gap_in_the_source_is_reported_not_failed(work):
+    """A compressed trim of footage that has no frames for a while (the
+    recording dropped them) is saved; the gap is reported, where it is in
+    the output and in the source."""
+    src = fx.gap_clip(work / "gap")
+    out = fresh(work, "out_gap_clip")
+    enc = EncodeSettings(codec="h264", quality=28, preset="ultrafast").to_dict()
+    c, logs = ctx()
+    r = run_job(ClipJob(str(src), segments=[(2.0, 18.0)], compress=True, encode=enc, options=opts(out)), c)
+    assert r.status == "done", logs
+    assert len(r.warnings) == 1, r.warnings
+    m = re.match(r"Gap already in the source: (\d+\.\d+)s with no frames at 0:(\d+\.\d+) "
+                 r"\(Gap clip\.mkv at 0:(\d+\.\d+)\)", r.warnings[0])
+    assert m, r.warnings[0]
+    length, at, src_at = map(float, m.groups())
+    assert abs(length - 2.53) < 0.1 and abs(at - 6.0) < 0.2 and abs(src_at - 8.0) < 0.1
+    assert any(l.startswith("Gap already in the source") for l in logs)
+
+
+def test_copy_trim_reports_the_source_gap_too(work):
+    src = fx.gap_clip(work / "gap")
+    out = fresh(work, "out_gap_copy")
+    c, logs = ctx()
+    r = run_job(ClipJob(str(src), segments=[(0.0, 15.0)], options=opts(out, exact_cuts=False)), c)
+    assert r.status == "done", logs
+    assert len(r.warnings) == 1 and "at 0:07.9" in r.warnings[0], r.warnings
+    c, logs = ctx()
+    r = run_job(ClipJob(str(src), segments=[(12.0, 18.0)], options=opts(out, exact_cuts=False)), c)
+    assert r.status == "done" and r.warnings == [], r.warnings        # the part kept has no gap
+
+
+def test_a_gap_the_source_doesnt_have_still_fails(work):
+    from trimmer.core.jobs import SourceGap, check_frames
+    gapped = fx.gap_clip(work / "gap")
+    plain = fx.single_clip(work / "single")
+    info_g, info_p = ff.probe(gapped), ff.probe(plain)
+    # The gapped file checked as if made from footage without a gap: a fault.
+    problem = check_frames(gapped, 20.0, 30.0, [(plain, info_p, 0.0, 20.0)])
+    assert problem and "isn't in the source" in problem
+    # From a source with the gap somewhere else: still a fault.
+    problem = check_frames(gapped, 20.0, 30.0, [(gapped, info_g, 4.0, 20.0)])
+    assert problem and "gap in its frames at 0:07.9" in problem
+    # From itself: fine, and the gap is handed back.
+    found: List[SourceGap] = []
+    assert check_frames(gapped, 20.0, 30.0, [(gapped, info_g, 0.0, 20.0)], found) is None
+    assert len(found) == 1 and abs(found[0].length - 2.53) < 0.05
+    # Without sources, as before.
+    assert "gap in its frames" in check_frames(gapped, 20.0, 30.0)
+
+
+@pytest.mark.parametrize("compress,packets", [(True, True), (False, True), (True, False)])
+def test_merge_of_replays_with_a_source_gap(work, compress, packets):
+    """A merge (packet join or the fallback, compressed or not) of replays
+    that share a gap is saved, and the info file lists the gap."""
+    clips = fx.gap_replays(work / "gap_replays")
+    out = fresh(work, f"out_gap_merge_{compress}_{packets}")
+    enc = EncodeSettings(codec="h264", quality=28, preset="ultrafast").to_dict()
+    c, logs = ctx()
+    r = run_job(MergeJob([str(p) for p in clips], compress=compress, encode=enc,
+                         options=opts(out, generate_clip_log=True, use_packet_matching=packets)), c)
+    assert r.status == "done", logs
+    assert any("Exact overlap found" in l for l in logs) == packets, logs
+    assert len(r.warnings) == 1, r.warnings
+    at = float(re.search(r"2\.5\ds with no frames at 0:(\d+\.\d+)", r.warnings[0]).group(1))
+    assert abs(at - 8.0) < 0.1, r.warnings
+    info = next(out.glob("*info.txt")).read_text(encoding="utf-8")
+    assert "Gaps already in the source" in info and r.warnings[0].split(": ", 1)[1] in info, info

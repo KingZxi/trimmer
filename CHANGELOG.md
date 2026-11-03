@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Changed: footage that already has a gap in its frames (a stretch where the recording has no
+  picture, e.g. when the game stalled) no longer fails the job with "output has a ...s gap in its
+  frames". Trimmer checks the gap against the source: if the source has it at that place, the job
+  finishes and reports it (length, where it is in the output and in the source) in the queue's
+  Details, the Notes column of Clips and Replay merge, the job log and the Replay merge info
+  file. A gap the source doesn't have still fails the job, as before.
 - Fixed: ffmpeg could keep running (with high CPU) after Trimmer closed, most often a quality
   trial for "Auto settings, measured" / Auto 3 that was still testing a waiting clip. Cancelling
   now stops those trials at once, closing Trimmer ends every ffmpeg it started, and on Windows
