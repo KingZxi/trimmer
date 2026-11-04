@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QLabel, QMa
 
 from ..core import ffmpeg as ff
 from ..core import jobs as J
-from ..core.journal import clear_queue, load_queue, save_queue
+from ..core.journal import clean_logs, clear_queue, load_queue, save_queue
 from ..core.session import autosave_path, clear_session, load_session, save_session
 from ..core.settings import AppSettings
 from ..core.util import VIDEO_EXTENSIONS, find_video_files, recycle_or_delete, same_file
@@ -80,6 +80,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.merge, "Replay merge")
         self.tabs.addTab(self.queue, "Queue")
         self.setCentralWidget(self.tabs)
+        self.tabs.setTabVisible(self.tabs.indexOf(self.merge), self.settings.show_replay_merge)
         for tab in (self.clips, self.merge):
             tab.queue_jobs.connect(self._queue_jobs)
         for tab in (self.clips, self.merge, self.queue):
@@ -276,10 +277,20 @@ class MainWindow(QMainWindow):
                     w.update()
             self.clips.refresh_from_settings()
             self.merge.refresh_from_settings()
+            self._show_merge_tab(self.settings.show_replay_merge)
             problem = self.guard.apply_settings()
             if problem:
                 QMessageBox.warning(self, "Global pause key", problem)
             self._show_output()
+
+    def _show_merge_tab(self, shown: bool):
+        i = self.tabs.indexOf(self.merge)
+        if self.tabs.isTabVisible(i) == shown:
+            return
+        if not shown and self.tabs.currentWidget() is self.merge:
+            self.tabs.setCurrentWidget(self.clips)
+        self.tabs.setTabVisible(i, shown)
+        self.merge.set_shown(shown)
 
     # -------------------------------------------------------------- startup
     def startup_checks(self):
@@ -291,6 +302,8 @@ class MainWindow(QMainWindow):
                     shutil.rmtree(old, ignore_errors=True)
             except OSError:
                 pass
+        if self.settings.auto_delete_logs and self.settings.keep_logs_days > 0:
+            clean_logs(self.settings.keep_logs_days)
         if ff.ffmpeg_version() == "not found" and not self.find_ffmpeg():
             return
 

@@ -60,6 +60,7 @@ class AppSettings:
     lossless_max_repeat: float = 2.0
     timestamp_is_end: bool = False
     generate_clip_log: bool = False
+    show_replay_merge: bool = True       # False hides the Replay merge tab (and stops watching)
     watch_folder: str = ""              # OBS replay folder to watch for new clips
     watch_enabled: bool = False
     # Queue
@@ -71,6 +72,8 @@ class AppSettings:
     ffmpeg_dir: str = ""
     theme: str = "dark"
     on_close: str = "ask"                 # ask | save | discard what is open when closing
+    auto_delete_logs: bool = True         # delete old run logs and crash reports when Trimmer starts
+    keep_logs_days: int = 30              # ... once they are older than this
     ui: dict = field(default_factory=dict)
 
     @classmethod

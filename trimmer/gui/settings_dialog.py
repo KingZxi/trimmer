@@ -1,11 +1,11 @@
 """Settings dialog and the OBS tips page."""
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame,
                                QFileDialog, QFormLayout, QGroupBox, QInputDialog, QKeySequenceEdit, QLabel, QLineEdit,
-                               QListWidget,
-                               QMessageBox, QPushButton, QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
+                               QListWidget, QSpinBox,
+                               QMessageBox, QPushButton, QScrollArea, QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
 
 from .. import APP_NAME, AUTHOR, AUTHOR_URL, COPYRIGHT, LICENSE_NAME, __version__
 from ..core import ffmpeg as ff
@@ -13,6 +13,7 @@ from ..core import savings
 from ..core.encode import EncodeSettings
 from ..core.render import AUDIO_RIP_FORMATS
 from ..core.settings import default_presets
+from ..core.journal import clean_logs, log_files
 from ..core.util import app_data_dir
 from .system_hooks import DEFAULT_IGNORE, IS_WINDOWS, play_chime
 from .widgets import EncodeForm, hbox, label
@@ -31,11 +32,20 @@ class SettingsDialog(QDialog):
         tabs = QTabWidget()
         tabs.setDocumentMode(True)
         lay.addWidget(tabs)
-        tabs.addTab(self._general(), "General")
-        tabs.addTab(self._compression(), "Compression")
-        tabs.addTab(self._merge(), "Replay merge")
-        tabs.addTab(self._queue(), "Queue")
-        tabs.addTab(self._about(), "About")
+        pages = [(self._general(), "General"), (self._compression(), "Compression"),
+                 (self._merge(), "Replay merge"), (self._queue(), "Queue"), (self._about(), "About")]
+        for page, title in pages:
+            # Each page scrolls, so the dialog (and its Save button) fits on small screens.
+            area = QScrollArea()
+            area.setWidgetResizable(True)
+            area.setFrameShape(QFrame.NoFrame)
+            area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            area.setWidget(page)
+            area.setMinimumWidth(page.sizeHint().width() + area.verticalScrollBar().sizeHint().width())
+            tabs.addTab(area, title)
+        tallest = max(page.sizeHint().height() for page, _ in pages)
+        room = self.screen().availableGeometry().height() - 60 if self.screen() else 900
+        self.resize(max(620, self.width()), max(420, min(tallest + 130, room)))
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Save).setProperty("kind", "primary")
         bb.accepted.connect(self._save)
@@ -206,7 +216,30 @@ class SettingsDialog(QDialog):
         self.on_close.setCurrentIndex(max(0, self.on_close.findData(s.on_close)))
         f.addRow("On close", self.on_close)
         f.addRow("Settings and logs", QLabel(str(app_data_dir())))
+        self.auto_logs = QCheckBox("Delete logs and crash reports older than")
+        self.auto_logs.setChecked(s.auto_delete_logs)
+        self.auto_logs.setToolTip("Checked when Trimmer starts. Untick to keep every log.")
+        self.keep_logs = QSpinBox()
+        self.keep_logs.setRange(1, 3650)
+        self.keep_logs.setSuffix(" days")
+        self.keep_logs.setValue(min(3650, max(1, int(s.keep_logs_days))))
+        self.keep_logs.setEnabled(s.auto_delete_logs)
+        self.auto_logs.toggled.connect(self.keep_logs.setEnabled)
+        self.b_clear_logs = QPushButton("Delete all logs now")
+        self.b_clear_logs.clicked.connect(self._clear_logs)
+        f.addRow("Logs", hbox(self.auto_logs, self.keep_logs, self.b_clear_logs, stretch_end=False))
         return w
+
+    def _clear_logs(self):
+        n = len(log_files())
+        if not n:
+            QMessageBox.information(self, "Logs", "There are no logs to delete.")
+            return
+        if QMessageBox.question(self, "Delete logs",
+                                f"Delete {n} run log(s) and crash report(s)? Settings, the queue and "
+                                "the space saved total are kept.") == QMessageBox.Yes:
+            gone = clean_logs(0)
+            QMessageBox.information(self, "Logs", f"Deleted {gone} file(s).")
 
     def _pick(self, line):
         d = QFileDialog.getExistingDirectory(self, "Choose folder", line.text())
@@ -271,6 +304,11 @@ class SettingsDialog(QDialog):
         f.setContentsMargins(4, 14, 4, 4)
         f.setVerticalSpacing(10)
         f.setHorizontalSpacing(18)
+        self.show_merge = QCheckBox("Show the Replay merge tab")
+        self.show_merge.setChecked(s.show_replay_merge)
+        self.show_merge.setToolTip("Untick if you only trim clips. Hiding it also stops watching the replay folder; "
+                                   "nothing else changes, and ticking it brings everything back.")
+        f.addRow("", self.show_merge)
         self.packets = QCheckBox("Match clips frame by frame (exact, lossless) when they share footage")
         self.packets.setChecked(True)
         f.addRow("", self.packets)
@@ -368,6 +406,8 @@ class SettingsDialog(QDialog):
         s.ffmpeg_dir = self.ffdir.text().strip()
         s.theme = self.theme.currentData()
         s.on_close = self.on_close.currentData()
+        s.auto_delete_logs = self.auto_logs.isChecked()
+        s.keep_logs_days = self.keep_logs.value()
         s.encode = enc.to_dict()
         s.presets = self.presets
         s.max_gap = self.gap.value()
@@ -379,6 +419,7 @@ class SettingsDialog(QDialog):
         s.lossless_max_repeat = self.repeat.value()
         s.seamless = self.seamless.isChecked()
         s.timestamp_is_end = bool(self.ts_end.currentData())
+        s.show_replay_merge = self.show_merge.isChecked()
         s.ui["packet_matching"] = self.packets.isChecked()
         s.game_pause = self.game_pause.isChecked()
         ignore = self.game_ignore.text().strip()

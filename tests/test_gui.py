@@ -1484,3 +1484,35 @@ def test_queue_details_start_with_compression(monkeypatch):
         ClipJob(str(src), compress=True, encode=EncodeSettings(quality="autoset").to_dict()))
     q.remove_selected([item])
     w.close()
+
+
+def test_replay_merge_tab_can_be_hidden(monkeypatch):
+    from trimmer.gui import settings_dialog
+    watch = WORK / "watch_hidden"
+    watch.mkdir(exist_ok=True)
+    w = window(WORK / "out_hidden")
+    s = w.settings
+    s.watch_folder, s.watch_enabled = str(watch), True
+    w.merge._start_watch_from_settings()
+    i = w.tabs.indexOf(w.merge)
+    assert w.tabs.isTabVisible(i) and w.merge.watcher.folder
+    w.tabs.setCurrentWidget(w.merge)
+
+    def untick(dlg):
+        dlg.show_merge.setChecked(False)
+        dlg._save()
+        return True
+    monkeypatch.setattr(settings_dialog.SettingsDialog, "exec", untick)
+    w.open_settings()
+    assert not w.tabs.isTabVisible(i) and w.tabs.currentWidget() is w.clips
+    assert not w.merge.watcher.folder and s.watch_enabled          # stopped, setting kept
+    assert not AppSettings.load().show_replay_merge
+    w.close()
+
+    w = window(WORK / "out_hidden")                                   # stays hidden after a restart
+    assert not w.tabs.isTabVisible(w.tabs.indexOf(w.merge)) and not w.merge.watcher.folder
+    w._show_merge_tab(True)
+    assert w.merge.watcher.folder
+    w.settings.show_replay_merge, w.settings.watch_enabled = True, False
+    w.settings.save()
+    w.close()

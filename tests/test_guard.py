@@ -225,3 +225,39 @@ def test_version_and_licence():
     assert trimmer.__version__.count(".") == 2 and trimmer.LICENSE_NAME == "GPL-3.0"
     text = (ROOT / "LICENSE").read_text(encoding="utf-8")
     assert "Version 3, 29 June 2007" in text and "END OF TERMS AND CONDITIONS" in text
+
+
+def test_old_logs_are_deleted_and_can_be_cleared(monkeypatch):
+    import time
+    from trimmer.core import journal
+    from trimmer.core.util import logs_dir
+    folder = logs_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    for p in folder.iterdir():
+        p.unlink()
+    old, new, crash = (folder / n for n in ("log (2026-01-01 10-00-00).txt", "log (2026-11-01 10-00-00).txt",
+                                             "crash (2026-01-02 10-00-00).txt"))
+    other = folder / "notes.txt"                   # not Trimmer's: never touched
+    for p in (old, new, crash, other):
+        p.write_text("x")
+    month_ago = time.time() - 40 * 86400
+    for p in (old, crash, other):
+        os.utime(p, (month_ago, month_ago))
+    assert journal.clean_logs(30) == 2
+    assert not old.exists() and not crash.exists() and new.exists() and other.exists()
+
+    from trimmer.gui import settings_dialog
+    from trimmer.gui.settings_dialog import SettingsDialog
+    monkeypatch.setattr(settings_dialog.QMessageBox, "question", lambda *a: settings_dialog.QMessageBox.Yes)
+    monkeypatch.setattr(settings_dialog.QMessageBox, "information", lambda *a: None)
+    d = SettingsDialog(AppSettings(), ["software"])
+    assert d.auto_logs.isChecked() and d.keep_logs.value() == 30
+    d.b_clear_logs.click()
+    assert not new.exists() and other.exists()
+    d.auto_logs.setChecked(False)
+    assert not d.keep_logs.isEnabled()
+    d.keep_logs.setValue(90)
+    d._save()
+    back = AppSettings.load()
+    assert not back.auto_delete_logs and back.keep_logs_days == 90
+    other.unlink()

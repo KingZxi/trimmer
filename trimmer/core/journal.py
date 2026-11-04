@@ -16,9 +16,11 @@ import json
 import os
 import platform
 import sys
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
+from typing import List
 
 from .util import app_data_dir, format_size, logs_dir
 
@@ -133,6 +135,36 @@ def clear_queue():
         (app_data_dir() / QUEUE_FILE).unlink()
     except OSError:
         pass
+
+
+LOG_PATTERNS = ("log (*).txt", "crash (*).txt")
+
+
+def log_files() -> List[Path]:
+    """Trimmer's own run logs and crash reports (nothing else in the folder is touched)."""
+    folder = logs_dir()
+    found = []
+    for pattern in LOG_PATTERNS:
+        try:
+            found += [p for p in folder.glob(pattern) if p.is_file()]
+        except OSError:
+            pass
+    return found
+
+
+def clean_logs(older_than_days: float = 0) -> int:
+    """Delete run logs and crash reports last changed more than older_than_days ago
+    (0: all of them). Returns how many were deleted."""
+    cutoff = time.time() - older_than_days * 86400
+    gone = 0
+    for p in log_files():
+        try:
+            if older_than_days <= 0 or p.stat().st_mtime < cutoff:
+                p.unlink()
+                gone += 1
+        except OSError:
+            pass
+    return gone
 
 
 def write_crash_log(exc_type, exc, tb) -> Path:

@@ -181,7 +181,16 @@ class MergeTab(QWidget):
         self.watcher.ready.connect(self._watched)
         self.watcher.lost.connect(self._watch_lost)
         self._build()
-        self._start_watch_from_settings()
+        if self.main.settings.show_replay_merge:
+            self._start_watch_from_settings()
+
+    def set_shown(self, shown: bool):
+        """Showing the tab watches the replay folder again (if that's on); hiding stops it
+        without changing the saved setting."""
+        if shown:
+            self._start_watch_from_settings()
+        else:
+            self.watcher.stop()
 
     def _build(self):
         lay = QVBoxLayout(self)

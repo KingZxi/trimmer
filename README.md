@@ -118,6 +118,9 @@ match, Trimmer re-encodes the whole trim instead and says so in the log.
 
 ![Replay merge tab: sessions and how the clips overlap](docs/replay-merge.png)
 
+Don't use the Replay Buffer? Untick Settings > Replay merge > "Show the
+Replay merge tab" to hide it.
+
 Drop in your Replay Buffer clips. Clips that overlap in time are grouped into
 sessions and drawn on a timeline, and clips that are fully covered by their
 neighbours are marked as redundant. Double-click a session (or press F2) to
@@ -218,7 +221,9 @@ Files that have moved are skipped and listed.
   compressed or merged (by that note, or by Trimmer's name tags). Both warnings
   can be turned off in Settings.
 - Settings, logs and crash reports are kept in `%APPDATA%\Trimmer`
-  (`Logs` holds one log per run).
+  (`Logs` holds one log per run). Logs and crash reports older than 30 days
+  are deleted when Trimmer starts; Settings > General changes the age, turns
+  it off, or deletes them all now.
 
 ## Project layout
 

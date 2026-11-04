@@ -7,6 +7,15 @@ First release on GitHub, with a Windows installer and a portable zip.
 - New: the queue's details panel starts with the job's full compression settings (codec and
   encoder, quality, preset, audio, size caps, "keep the original if bigger"), and updates when
   they change, including after "Auto settings, measured" has picked its settings.
+- New: Settings > Replay merge > "Show the Replay merge tab" hides the tab for anyone who only
+  trims clips (it also stops watching the replay folder until the tab is shown again).
+- New: run logs and crash reports older than 30 days are deleted when Trimmer starts. Settings >
+  General changes the age or turns it off, and "Delete all logs now" clears them.
+- Changed: the Settings pages scroll, so the dialog and its Save button fit on smaller screens.
+- Fixed: "Original" audio rips of FLAC tracks (common in MKV recordings) failed their check,
+  because the copied file still claimed the whole source's length.
+- Fixed: audio rips now carry the track's name (Mic, Desktop...) on the track itself, not only
+  as the file's title, so players and Trimmer show it.
 - Fixed: preview sound kept playing on the old speakers or headphones after the default output
   device was switched in Windows. It now follows the change.
 - Changed: footage that already has a gap in its frames (a stretch where the recording has no

@@ -529,7 +529,9 @@ def rip_audio(spans: List[Span], track: int, fmt: str, out_base: Path,
     multi = len(spans) > 1
     if fmt == "copy":
         ext = _COPY_EXT.get(tr.codec, ".mka")
-        codec = ["-c:a", "copy"]
+        # A copied FLAC stream keeps the source's STREAMINFO (its total length), so the .flac
+        # would claim the whole source's duration. Encoding FLAC again is lossless and exact.
+        codec = ["-c:a", "flac"] if tr.codec == "flac" else ["-c:a", "copy"]
     elif fmt == "wav":
         ext, codec = ".wav", ["-c:a", "pcm_s16le"]
     elif fmt == "flac":
@@ -555,7 +557,10 @@ def rip_audio(spans: List[Span], track: int, fmt: str, out_base: Path,
         args = inputs + ["-map", f"0:a:{track}"] + _drop_preroll(spans[0])
     args += ["-vn"] + codec + ["-map_metadata", "-1"] + tag_args(tag)
     if tr.title:
-        args += ["-metadata", f"title={tr.title}"]
+        # The file's title, plus the track's own name (MKV/MKA keep it in the stream title,
+        # MP4/M4A in handler_name), so players and Trimmer show "Mic" rather than nothing.
+        args += ["-metadata", f"title={tr.title}",
+                 "-metadata:s:a:0", f"title={tr.title}", "-metadata:s:a:0", f"handler_name={tr.title}"]
     if ext in (".m4a",):
         args += ["-movflags", "+faststart"]
     args += ["-y", str(out_path)]

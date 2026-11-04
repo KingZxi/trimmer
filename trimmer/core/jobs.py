@@ -847,7 +847,7 @@ def _delete_sources(job, sources: List[Path], outputs: List[Path], ctx, res: Job
             res.deferred.append(str(s))
             ctx.log(f"Original {Path(s).name} kept for now: "
                     + (why if isinstance(why, str) else "a later job in the queue still uses it") + ". "
-                    f"It is removed once every job using it has saved its outputs.")
+                    "It is removed once every job using it has saved its outputs.")
             continue
         doomed.append(Path(s))
     if doomed:

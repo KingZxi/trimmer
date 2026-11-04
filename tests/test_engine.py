@@ -1059,3 +1059,28 @@ def test_merge_of_replays_with_a_source_gap(work, compress, packets):
     assert abs(at - 8.0) < 0.1, r.warnings
     info = next(out.glob("*info.txt")).read_text(encoding="utf-8")
     assert "Gaps already in the source" in info and r.warnings[0].split(": ", 1)[1] in info, info
+
+
+@pytest.mark.parametrize("codec", ["aac", "flac"])
+def test_copied_audio_rips_keep_track_names_and_length(work, codec):
+    """Rips carry the track's own name (not just the file title), and a copied FLAC
+    rip reports its own length, not the whole source's (FLAC copies kept STREAMINFO)."""
+    src = work / f"named {codec}.mkv"
+    if not src.exists():
+        fx.run("-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=8", "-f", "lavfi", "-i", "sine=f=440:d=8",
+               "-f", "lavfi", "-i", "sine=f=880:d=8", "-map", "0", "-map", "1", "-map", "2",
+               "-c:v", "libx264", "-g", "30", "-c:a", codec,
+               "-metadata:s:a:0", "title=Mic", "-metadata:s:a:1", "title=Desktop", str(src))
+    out = fresh(work, f"out_named_rips_{codec}")
+    c, logs = ctx()
+    r = run_job(ClipJob(str(src), segments=[(1.0, 4.0)], rip_audio_tracks=[0, 1],
+                        options=opts(out, rip_format="copy")), c)
+    assert r.status == "done", logs
+    video = next(out.glob("*.mkv"))
+    length = ff.probe(video, use_cache=False).duration
+    for track, name in ((1, "Mic"), (2, "Desktop")):
+        rip = next(out.glob(f"* - Track {track} ({name}).*"))
+        info = ff.probe(rip, use_cache=False)
+        assert abs(info.duration - length) < 0.3, (rip.name, info.duration, length)   # not the 8 s source
+        if codec == "aac":
+            assert [a.title for a in info.audio] == [name]
