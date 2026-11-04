@@ -1042,6 +1042,22 @@ def test_a_gap_the_source_doesnt_have_still_fails(work):
     assert "gap in its frames" in check_frames(gapped, 20.0, 30.0)
 
 
+def test_damaged_frames_in_the_source_are_reported_not_failed(work):
+    """Frames that are in the file but can't be decoded leave a gap in a
+    re-encode with no gap in the packet times: decoding the source there
+    shows it was already so."""
+    src = fx.damaged_clip(work / "damaged")
+    assert not pk.read_pts(src) or max(b - a for a, b in zip(pk.read_pts(src), pk.read_pts(src)[1:])) < 0.1
+    out = fresh(work, "out_damaged")
+    enc = EncodeSettings(codec="h264", quality=28, preset="ultrafast").to_dict()
+    c, logs = ctx()
+    r = run_job(ClipJob(str(src), segments=[(2.0, 18.0)], compress=True, encode=enc, options=opts(out)), c)
+    assert r.status == "done", logs
+    assert len(r.warnings) == 1 and "damaged frames that can't be played" in r.warnings[0], r.warnings
+    at = float(re.search(r"played at 0:(\d+\.\d+)", r.warnings[0]).group(1))
+    assert abs(at - 6.0) < 0.2, r.warnings
+
+
 @pytest.mark.parametrize("compress,packets", [(True, True), (False, True), (True, False)])
 def test_merge_of_replays_with_a_source_gap(work, compress, packets):
     """A merge (packet join or the fallback, compressed or not) of replays

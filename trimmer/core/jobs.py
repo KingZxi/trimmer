@@ -453,10 +453,61 @@ class SourceGap:
     length: float
     source: Path
     source_at: float        # where it is in the source file
+    damaged: bool = False   # the source has frames there, but they can't be decoded
 
     def describe(self) -> str:
-        return (f"Gap already in the source: {self.length:.2f}s with no frames at {format_hms_ms(self.at)} "
+        what = "damaged frames that can't be played" if self.damaged else "no frames"
+        return (f"Gap already in the source: {self.length:.2f}s with {what} at {format_hms_ms(self.at)} "
                 f"({self.source.name} at {format_hms_ms(self.source_at)})")
+
+
+def decoded_gaps(path: Path, info, start: float, end: float, fps: float,
+                 cancel: CancelToken = None) -> List[Tuple[float, float]]:
+    """(time, length) of the stretches between start and end (seconds from
+    the file's start) where decoding the file gives no picture. A source can
+    have every packet and still lose frames: damaged ones (a recording
+    glitch) are dropped by the decoder, so they show as a gap in any player
+    and in a re-encode, though the packet times are unbroken."""
+    t0 = info.start_time + max(0.0, start)
+    cmd = [ff.ffmpeg_bin(), "-v", "quiet", "-ss", f"{t0:.3f}", "-t", f"{max(0.5, end - start):.3f}",
+           "-copyts", "-i", str(path), "-map", "0:v:0", "-fps_mode", "passthrough",
+           "-f", "framemd5", "-"]
+    tb, pts = 0.001, []
+    for line in ff.run_quiet(cmd, cancel=cancel).stdout.splitlines():
+        if line.startswith("#tb 0:"):
+            n, d = line.split(":", 1)[1].strip().split("/")
+            tb = int(n) / int(d)
+        elif line and not line.startswith("#"):
+            parts = [x.strip() for x in line.split(",")]
+            if len(parts) >= 3 and parts[0] == "0":
+                try:
+                    pts.append(int(parts[2]) * tb - info.start_time)
+                except ValueError:
+                    pass
+    pts.sort()
+    if not pts:
+        return [(start, end - start)]
+    limit = _gap_limit(fps) / 2
+    edges = [start] + pts + [end]       # nothing decoded at either end of the stretch counts too
+    return [(a, b - a) for a, b in zip(edges, edges[1:]) if b - a > limit]
+
+
+def _decoded_match(sources: List[Window], at: float, length: float, fps: float, slack: float,
+                   cancel: CancelToken = None) -> Optional[SourceGap]:
+    """The source stretch an output gap at `at` came from, decoded: a SourceGap
+    when the source gives no picture there either (damaged frames), else None."""
+    offset = 0.0
+    for path, info, start, stop in sources:
+        span = max(0.0, stop - start)
+        if offset - slack <= at < offset + span and info.has_video:
+            src_at = start + max(0.0, at - offset)
+            lo, hi = max(start, src_at - 1.0), min(stop, src_at + length + 1.0)
+            for a, g in decoded_gaps(Path(path), info, lo, hi, fps, cancel):
+                if abs(a - src_at) <= 0.5 + slack and length <= g + slack:
+                    return SourceGap(at, length, Path(path), a, damaged=True)
+            return None
+        offset += span
+    return None
 
 
 def source_gaps(windows: List[Window], fps: float, cancel: CancelToken = None) -> List[SourceGap]:
@@ -493,13 +544,17 @@ def check_frames(out: Path, expected_duration: float, fps: float, sources: List[
     slack = max(0.1, 3.0 / fps)
     for a, g in gaps:
         match = next((k for k in known if abs(a - k.at) <= 0.5 + slack and g <= k.length + slack), None)
+        if match is None and sources:
+            match = _decoded_match(sources, a, g, fps, slack, cancel)
+            if match is not None:
+                known.append(match)
         if match is None:
             if sources:
                 return f"output has a {g:.2f}s gap in its frames at {format_hms_ms(a)} that isn't in the source"
             return f"output has a {g:.2f}s gap in its frames at {format_hms_ms(a)}"
         known.remove(match)
         if found is not None:
-            found.append(SourceGap(a, g, match.source, match.source_at))
+            found.append(SourceGap(a, g, match.source, match.source_at, match.damaged))
     return None
 
 
@@ -535,8 +590,9 @@ def _gap_section(gaps: List[str]) -> str:
     if not gaps:
         return ""
     lines = ["", "Gaps already in the source", "--------------------------",
-             "The source footage has no frames for these stretches (it was recorded that way), so the",
-             "picture holds still there while the sound plays on. The output keeps them as they are.", ""]
+             "The source footage has no frames for these stretches, or only damaged ones that can't be",
+             "played (it was recorded that way), so the picture holds still there while the sound plays",
+             "on. The output keeps them as they are.", ""]
     return "\n".join(lines + [f"  {g.split(': ', 1)[1]}" for g in gaps]) + "\n"
 
 

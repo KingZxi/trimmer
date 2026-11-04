@@ -3,6 +3,7 @@ re-pointed to another folder, given other compression, or reordered;
 the running job can be paused and resumed in place."""
 
 import os
+import re
 import subprocess
 import sys
 from dataclasses import replace
@@ -40,7 +41,7 @@ def gap_note(result, short=False) -> str:
         return ""
     first = w[0].split(" (", 1)[0] if short else w[0]
     if short:
-        first = "source gap " + first.split(": ", 1)[1].replace(" with no frames", "")
+        first = "source gap " + re.sub(r" with .*? at ", " at ", first.split(": ", 1)[1])
     return first + (f" (+{len(w) - 1} more)" if len(w) > 1 else "")
 
 

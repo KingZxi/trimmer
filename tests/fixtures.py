@@ -173,3 +173,22 @@ def gap_replays(folder: Path):
                 "-avoid_negative_ts", "make_zero", str(p))
         paths.append(p)
     return paths
+
+
+def damaged_clip(folder: Path, seconds=20, bad=(8.0, 10.5)) -> Path:
+    """A clip with every packet present but the ones from bad[0] to bad[1]
+    scrambled, so the decoder drops those frames: players and re-encodes
+    show a gap that the packet times don't."""
+    folder.mkdir(parents=True, exist_ok=True)
+    p = folder / "Damaged clip.mkv"
+    if p.exists():
+        return p
+    good = folder / "undamaged.mkv"
+    run("-f", "lavfi", "-i", f"testsrc2=s=320x180:r=30:d={seconds}",
+        "-f", "lavfi", "-i", f"sine=f=440:r=48000:d={seconds}", "-map", "0:v", "-map", "1:a",
+        "-c:v", "libx264", "-preset", "veryfast", "-g", "60", "-bf", "2", "-x264-params", "scenecut=0",
+        "-c:a", "aac", "-b:a", "128k", str(good))
+    run("-v", "quiet", "-i", str(good), "-map", "0", "-c", "copy",
+        "-bsf:v", f"noise=amount='if(between(pts*tb,{bad[0]},{bad[1]}),2,0)'", str(p))
+    good.unlink()
+    return p

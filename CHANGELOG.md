@@ -24,6 +24,9 @@ First release on GitHub, with a Windows installer and a portable zip.
   finishes and reports it (length, where it is in the output and in the source) in the queue's
   Details, the Notes column of Clips and Replay merge, the job log and the Replay merge info
   file. A gap the source doesn't have still fails the job, as before.
+- Fixed: a gap from damaged frames (they are in the file but can't be decoded, so every player
+  skips them) still failed the job as "a gap that isn't in the source". Trimmer now decodes the
+  source around the gap, and reports it as "damaged frames that can't be played".
 - Fixed: ffmpeg could keep running (with high CPU) after Trimmer closed, most often a quality
   trial for "Auto settings, measured" / Auto 3 that was still testing a waiting clip. Cancelling
   now stops those trials at once, closing Trimmer ends every ffmpeg it started, and on Windows
