@@ -1,7 +1,14 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 (2026-11-04)
 
+First release on GitHub, with a Windows installer and a portable zip.
+
+- New: the queue's details panel starts with the job's full compression settings (codec and
+  encoder, quality, preset, audio, size caps, "keep the original if bigger"), and updates when
+  they change, including after "Auto settings, measured" has picked its settings.
+- Fixed: preview sound kept playing on the old speakers or headphones after the default output
+  device was switched in Windows. It now follows the change.
 - Changed: footage that already has a gap in its frames (a stretch where the recording has no
   picture, e.g. when the game stalled) no longer fails the job with "output has a ...s gap in its
   frames". Trimmer checks the gap against the source: if the source has it at that place, the job

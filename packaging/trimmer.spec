@@ -4,15 +4,25 @@
 
 from pathlib import Path
 
+from PyInstaller.utils.hooks import copy_metadata
+
 ROOT = Path(SPECPATH).parent
+
+# Each package's dist-info folder carries its licence texts (see THIRD-PARTY-NOTICES.md).
+# build.ps1 puts LICENSE, LICENSES\ and the notices next to Trimmer.exe.
+licences = []
+for dist in ("numpy", "send2trash", "PySide6", "PySide6_Essentials", "shiboken6"):
+    try:
+        licences += copy_metadata(dist)
+    except Exception:
+        pass
 
 a = Analysis(
     [str(ROOT / "trimmer.py")],
     pathex=[str(ROOT)],
     datas=[
         (str(ROOT / "trimmer" / "gui" / "assets"), "trimmer/gui/assets"),
-        (str(ROOT / "LICENSE"), "."),
-    ],
+    ] + licences,
     # Qt parts Trimmer never uses, left out to keep the download small.
     excludes=["tkinter", "pytest", "tests", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
               "PySide6.QtQml", "PySide6.QtQuick", "PySide6.Qt3DCore", "PySide6.QtCharts",

@@ -1,0 +1,76 @@
+# Builds Trimmer.exe, the portable zip and the installer on a clean Windows
+# machine, and attaches them to a draft GitHub Release for the tag.
+# Start it by pushing a tag that matches trimmer/__init__.py, e.g.:
+#   git tag v1.2.0
+#   git push origin v1.2.0
+# Then check the draft under Releases and press Publish.
+# "Run workflow" on the Actions tab builds without making a release.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+
+      - name: Check the tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $version = (python -c "import trimmer; print(trimmer.__version__)").Trim()
+          if ("v$version" -ne "${{ github.ref_name }}") {
+            throw "Tag ${{ github.ref_name }} doesn't match trimmer.__version__ ($version)"
+          }
+
+      - name: Build
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File packaging\build.ps1
+
+      - name: Checksums and release notes
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem dist\*.exe, dist\*.zip
+          $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name } |
+            Set-Content dist\SHA256SUMS.txt -Encoding ascii
+          Get-Content dist\SHA256SUMS.txt
+          python packaging\release_notes.py > dist\release-notes.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Trimmer-windows
+          path: |
+            dist\*.exe
+            dist\*.zip
+            dist\SHA256SUMS.txt
+
+      - name: Draft the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: Trimmer ${{ github.ref_name }}
+          body_path: dist/release-notes.md
+          files: |
+            dist/*.exe
+            dist/*.zip
+            dist/SHA256SUMS.txt

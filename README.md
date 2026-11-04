@@ -19,8 +19,10 @@ Created by **KingZxi** ([github.com/KingZxi](https://github.com/KingZxi)).
 
 ## Download (Windows)
 
-1. Download `Trimmer-<version>-setup.exe` from the Releases page and run it.
-   No admin rights are needed.
+1. Download `Trimmer-<version>-setup.exe` from the
+   [Releases page](../../releases/latest) and run it. No admin rights are
+   needed. Prefer no installer? Take `Trimmer-<version>-portable.zip`, unzip it
+   anywhere and run `Trimmer.exe`.
 2. Trimmer needs ffmpeg. On first launch it explains how to get it: run
    `winget install Gyan.FFmpeg`, or download a Windows build from ffmpeg.org
    and pick its `bin` folder (or put it in a folder named `ffmpeg` next to
@@ -28,6 +30,12 @@ Created by **KingZxi** ([github.com/KingZxi](https://github.com/KingZxi)).
 
 Settings and the queue are kept in `%APPDATA%\Trimmer`, so updating or
 uninstalling leaves them alone.
+
+The download isn't code-signed yet. Windows SmartScreen may show "Windows
+protected your PC": click **More info**, then **Run anyway**. If Smart App
+Control is turned on, Windows blocks unsigned apps outright; run Trimmer from
+source instead (below), which Smart App Control allows. `SHA256SUMS.txt` on
+each release lists the files' checksums.
 
 ## Run from source (Windows)
 
@@ -236,11 +244,16 @@ tests/                  engine and GUI tests on synthetic clips
 powershell -ExecutionPolicy Bypass -File packaging\build.ps1
 ```
 
-This makes `dist\Trimmer\Trimmer.exe` with PyInstaller and, if Inno Setup 6
-is installed (`winget install JRSoftware.InnoSetup`), the installer
+This makes `dist\Trimmer\Trimmer.exe` with PyInstaller, the portable
+`dist\Trimmer-<version>-portable.zip` and, if Inno Setup 6 is installed
+(`winget install JRSoftware.InnoSetup`), the installer
 `dist\Trimmer-<version>-setup.exe`. The version comes from
-`trimmer/__init__.py`; bump it and add a line to `CHANGELOG.md` for each
-release.
+`trimmer/__init__.py`.
+
+To release: bump the version, add its section to `CHANGELOG.md`, commit, then
+push a tag such as `v1.2.0`. The Release workflow
+(`.github/workflows/release.yml`) builds everything on GitHub's Windows
+machines and puts it in a draft release with checksums, ready to publish.
 
 ## Tests
 
@@ -272,10 +285,18 @@ Linux, run the GUI tests headless with `QT_QPA_PLATFORM=offscreen`.
 - The preview uses Qt's built-in player. If a file won't preview, it can
   still be edited and exported.
 
+## Reporting a problem
+
+Open an issue with what you did, what happened, and your Trimmer and ffmpeg
+versions (Settings > About shows Trimmer's; `ffmpeg -version` shows ffmpeg's).
+Logs and crash reports are in `%APPDATA%\Trimmer\Logs`. They contain your file
+names and folders, so look through them before attaching one.
+
 ## Licence
 
 Trimmer is free software under the GNU General Public License v3.0 (see
 `LICENSE`). You may use, share and change it; anything you share that is
 based on it must stay under the same licence and keep the copyright notice.
 Trimmer runs ffmpeg as a separate program and uses Qt for Python (PySide6,
-LGPL-3.0).
+LGPL-3.0). The Windows download also contains Python, Qt, numpy and
+Send2Trash; `THIRD-PARTY-NOTICES.md` lists them with their licences.

@@ -16,6 +16,20 @@ Write-Host "Building Trimmer $version"
 & $py -m PyInstaller --noconfirm --clean --distpath dist --workpath build packaging\trimmer.spec
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
+# Licences next to Trimmer.exe (the installer and the portable zip take them from here).
+$app = Join-Path $root "dist\Trimmer"
+Copy-Item LICENSE, THIRD-PARTY-NOTICES.md, CHANGELOG.md $app -Force
+New-Item -ItemType Directory -Force (Join-Path $app "LICENSES") | Out-Null
+Copy-Item LICENSES\* (Join-Path $app "LICENSES") -Force
+$pyHome = (& $py -c "import sys; print(sys.base_prefix)").Trim()
+Copy-Item (Join-Path $pyHome "LICENSE.txt") (Join-Path $app "LICENSES\Python-LICENSE.txt") -Force
+
+# Portable zip: unzip anywhere and run Trimmer.exe.
+$zip = Join-Path $root "dist\Trimmer-$version-portable.zip"
+if (Test-Path $zip) { Remove-Item $zip }
+Compress-Archive -Path $app -DestinationPath $zip
+Write-Host "Portable: dist\Trimmer-$version-portable.zip"
+
 $iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
           "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
           "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
