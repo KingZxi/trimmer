@@ -7,13 +7,12 @@ finished job, deleted or not. Everything is approximate.
 """
 
 import json
-import os
 import threading
 from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
 
-from .util import app_data_dir, format_size
+from .util import app_data_dir, format_size, read_safely, write_safely
 
 STATS_FILE = "stats.json"
 _lock = threading.Lock()
@@ -40,9 +39,12 @@ def load() -> Savings:
     """The stored totals; a missing or damaged file starts fresh."""
     s = Savings()
     try:
-        data = json.loads(path().read_text(encoding="utf-8"))
+        data = json.loads(read_safely(path()))
     except (OSError, ValueError):
-        return s
+        try:            # damaged file (a crash mid-write): the previous copy
+            data = json.loads(path().with_name(STATS_FILE + ".bak").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return s
     if not isinstance(data, dict):
         return s
     if isinstance(data.get("since"), str):
@@ -58,12 +60,8 @@ def load() -> Savings:
 
 
 def _save(s: Savings):
-    p = path()
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps(asdict(s), indent=2), encoding="utf-8")
-        os.replace(tmp, p)
+        write_safely(path(), json.dumps(asdict(s), indent=2))
     except OSError:
         pass
 
@@ -103,6 +101,22 @@ def set_saved(saved_bytes: int) -> Savings:
     with _lock:
         s = load()
         s.saved_bytes = int(saved_bytes)
+        _save(s)
+        return s
+
+
+def set_totals(saved_bytes=None, reduction_bytes=None, clips=None, jobs=None, since=None) -> Savings:
+    """Set any of the figures by hand (Settings > General > Space saved > Edit)."""
+    with _lock:
+        s = load()
+        for k, v in (("saved_bytes", saved_bytes), ("reduction_bytes", reduction_bytes)):
+            if v is not None:
+                setattr(s, k, int(v))
+        for k, v in (("clips", clips), ("jobs", jobs)):
+            if v is not None:
+                setattr(s, k, max(0, int(v)))
+        if since is not None:
+            s.since = date.fromisoformat(since).isoformat()
         _save(s)
         return s
 

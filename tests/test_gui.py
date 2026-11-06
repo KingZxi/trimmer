@@ -558,6 +558,24 @@ def test_savings_edit_dialog():
     assert abs(d.amount.value() - 3072) < 1e-6 and d.value() == 3 * 1024 ** 3
     d.amount.setValue(512)
     assert d.value() == 512 * 1024 ** 2
+    # every figure in the summary can be set, e.g. to carry totals over from before
+    from datetime import date
+    from PySide6.QtCore import QDate
+    from trimmer.core import savings
+    cur = savings.Savings(saved_bytes=2 * 1024 ** 4, reduction_bytes=-5 * 1024 ** 2, clips=1234, since="2025-03-01")
+    d = SavingsEditDialog(cur)
+    assert d.saved.unit.currentText() == "TB" and d.clips.value() == 1234
+    assert d.values() == {"saved_bytes": 2 * 1024 ** 4, "reduction_bytes": -5 * 1024 ** 2, "clips": 1234,
+                          "since": "2025-03-01"}
+    d.clips.setValue(4321)
+    d.since.setDate(QDate(2024, 12, 25))
+    d.reduction.amount.setValue(7)
+    v = d.values()
+    assert v["clips"] == 4321 and v["since"] == "2024-12-25" and v["reduction_bytes"] == 7 * 1024 ** 2
+    s = savings.set_totals(**v)
+    assert (s.clips, s.since, s.reduction_bytes) == (4321, "2024-12-25", 7 * 1024 ** 2)
+    assert savings.load().since == "2024-12-25" and "4,321 clips since 25 Dec 2024" in savings.summary_text()
+    assert date.fromisoformat(savings.load().since)
 
 
 def test_save_state_on_close_restores_everything(monkeypatch):

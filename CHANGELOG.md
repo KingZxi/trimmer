@@ -25,6 +25,10 @@ First release on GitHub, with a Windows installer and a portable zip.
   The release build now checks that playback loads before it's published.
 - Fixed: the Windows build's preview had no sound and was slow, because a part of Qt the video
   player needs had been left out of the build.
+- New: Settings > General > Space saved > Edit sets every figure (space saved, how much smaller
+  the outputs are, clips processed and the date counting started), e.g. to carry totals over.
+- Fixed: a crash or power cut while Trimmer was saving could empty its settings or the space
+  saved totals. Both are now written safely, and the previous copy is used if a file is damaged.
 - Fixed: a stray line above the Settings tabs.
 - Fixed: the installed Trimmer.exe showed a blank icon on the taskbar while running.
 - Changed: the Windows build compiles its own PyInstaller launcher, which antivirus programs

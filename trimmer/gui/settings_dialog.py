@@ -1,9 +1,11 @@
 """Settings dialog and the OBS tips page."""
 
-from PySide6.QtCore import Qt, QTimer
+from datetime import date
+
+from PySide6.QtCore import QDate, Qt, QTimer
 from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame,
-                               QFileDialog, QFormLayout, QGroupBox, QInputDialog, QKeySequenceEdit, QLabel, QLineEdit,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDateEdit, QDialogButtonBox, QDoubleSpinBox, QFrame,
+                               QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QKeySequenceEdit, QLabel, QLineEdit,
                                QListWidget, QSpinBox,
                                QMessageBox, QPushButton, QScrollArea, QSizePolicy, QTabWidget, QTextBrowser, QToolButton,
                                QVBoxLayout, QWidget)
@@ -202,7 +204,7 @@ class SettingsDialog(QDialog):
         f.addRow("", self.count_kept)
         self.savings_info = label(savings.summary_text(), "muted")
         b_edit = QPushButton("Edit…")
-        b_edit.setToolTip("Set the space saved total yourself")
+        b_edit.setToolTip("Set the space saved figures yourself")
         b_edit.clicked.connect(lambda: self._edit_savings())
         b_reset = QPushButton("Reset")
         b_reset.clicked.connect(lambda: self._reset_savings())
@@ -508,9 +510,9 @@ class SettingsDialog(QDialog):
             self.savings_info.setText(savings.summary_text())
 
     def _edit_savings(self):
-        d = SavingsEditDialog(savings.load().saved_bytes, self)
+        d = SavingsEditDialog(savings.load(), self)
         if d.exec() == QDialog.Accepted:
-            savings.set_saved(d.value())
+            savings.set_totals(**d.values())
             self.savings_info.setText(savings.summary_text())
 
     def _save(self):
@@ -604,17 +606,13 @@ class TipsDialog(QDialog):
         lay.addWidget(bb)
 
 
-class SavingsEditDialog(QDialog):
-    """Asks for a new space saved total in MB, GB or TB."""
+class _SizeInput(QWidget):
+    """An amount of disk space as a number plus MB / GB / TB."""
 
     UNITS = (("MB", 1024 ** 2), ("GB", 1024 ** 3), ("TB", 1024 ** 4))
 
     def __init__(self, current_bytes, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Edit space saved")
-        lay = QVBoxLayout(self)
-        lay.addWidget(label("Set the total yourself, for example to count clips you deleted outside Trimmer.\n"
-                            "New jobs keep adding to it as usual.", "muted"))
         self.amount = QDoubleSpinBox()
         self.amount.setDecimals(2)
         self.amount.setRange(-1_000_000, 1_000_000)
@@ -628,11 +626,11 @@ class SavingsEditDialog(QDialog):
         self.amount.setValue(current_bytes / self.unit.currentData())
         self._mult = self.unit.currentData()
         self.unit.currentIndexChanged.connect(lambda _: self._unit_changed())
-        lay.addWidget(hbox(label("Space saved", "muted"), self.amount, self.unit))
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        bb.accepted.connect(self.accept)
-        bb.rejected.connect(self.reject)
-        lay.addWidget(bb)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self.amount)
+        lay.addWidget(self.unit)
+        lay.addStretch(1)
 
     def _unit_changed(self):
         # keep the same amount of space when switching units
@@ -642,3 +640,56 @@ class SavingsEditDialog(QDialog):
 
     def value(self) -> int:
         return round(self.amount.value() * self.unit.currentData())
+
+
+class SavingsEditDialog(QDialog):
+    """Set the space saved figures yourself: both totals, the clip count and the start date."""
+
+    def __init__(self, current, parent=None):
+        super().__init__(parent)
+        if not isinstance(current, savings.Savings):        # just a space saved total
+            current = savings.Savings(saved_bytes=int(current))
+        self.setWindowTitle("Edit space saved")
+        lay = QVBoxLayout(self)
+        lay.addWidget(label("Set the figures yourself, for example to carry over totals from before, or to\n"
+                            "count clips you deleted outside Trimmer. New jobs keep adding to them as usual.",
+                            "muted"))
+        f = QFormLayout()
+        f.setFieldGrowthPolicy(QFormLayout.FieldsStayAtSizeHint)
+        self.saved = _SizeInput(current.saved_bytes)
+        self.amount, self.unit = self.saved.amount, self.saved.unit
+        f.addRow("Space saved", self.saved)
+        self.reduction = _SizeInput(current.reduction_bytes)
+        self.reduction.setToolTip("How much smaller all outputs are than their sources (negative if larger)")
+        f.addRow("Outputs smaller by", self.reduction)
+        self.clips = QSpinBox()
+        self.clips.setRange(0, 2_000_000_000)
+        self.clips.setGroupSeparatorShown(True)
+        self.clips.setValue(max(0, current.clips))
+        self.clips.setMinimumWidth(130)
+        f.addRow("Clips processed", self.clips)
+        self.since = QDateEdit()
+        self.since.setCalendarPopup(True)
+        self.since.setDisplayFormat("d MMM yyyy")
+        try:
+            d = date.fromisoformat(current.since)
+        except ValueError:
+            d = date.today()
+        self.since.setDate(QDate(d.year, d.month, d.day))
+        self.since.setMaximumDate(QDate.currentDate())
+        self.since.setMinimumWidth(130)
+        f.addRow("Counting since", self.since)
+        lay.addLayout(f)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def value(self) -> int:
+        """The space saved total in bytes."""
+        return self.saved.value()
+
+    def values(self) -> dict:
+        q = self.since.date()
+        return {"saved_bytes": self.saved.value(), "reduction_bytes": self.reduction.value(),
+                "clips": self.clips.value(), "since": date(q.year(), q.month(), q.day()).isoformat()}

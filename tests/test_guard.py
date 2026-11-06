@@ -313,3 +313,25 @@ def test_playback_check_reports_why_it_failed(tmp_path):
     r = subprocess.run([sys.executable, "-c", code], cwd=root, env=env, capture_output=True, text=True,
                        timeout=120)
     assert r.stdout.split()[:2] == ["playback.txt", "True"], r.stderr
+
+
+def test_totals_and_settings_survive_a_damaged_file(tmp_path, monkeypatch):
+    """A crash mid-write could leave stats.json or settings.json empty: the previous copy is used."""
+    from trimmer.core import savings
+    from trimmer.core.settings import AppSettings
+    monkeypatch.setenv("TRIMMER_DATA_DIR", str(tmp_path))
+    s = savings.Savings(saved_bytes=5_000_000, jobs=3, clips=4)
+    savings._save(s)
+    s.jobs = 4
+    savings._save(s)                           # the 3-job copy becomes stats.json.bak
+    savings.path().write_text("", encoding="utf-8")      # what a power cut can leave behind
+    assert savings.load().jobs == 3 and savings.load().saved_bytes == 5_000_000
+    savings.path().write_text('{"jobs": 4', encoding="utf-8")   # half written
+    assert savings.load().jobs == 3
+    a = AppSettings()
+    a.theme = "light"
+    a.save()
+    a.save()
+    AppSettings.path().write_text("", encoding="utf-8")
+    assert AppSettings.load().theme == "light"
+    assert not list(tmp_path.glob("*.tmp"))

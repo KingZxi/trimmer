@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .encode import EncodeSettings
-from .util import app_data_dir
+from .util import app_data_dir, read_safely, write_safely
 
 SETTINGS_FILE = "settings.json"
 OLD_MERGE_SETTINGS = Path.home() / ".obs_merge_settings.json"
@@ -90,11 +90,12 @@ class AppSettings:
         s = cls()
         p = cls.path()
         data = None
-        try:
-            if p.exists():
-                data = json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            data = None
+        for text in (lambda: read_safely(p), lambda: p.with_name(p.name + ".bak").read_text(encoding="utf-8")):
+            try:
+                data = json.loads(text())       # a file damaged by a crash falls back to the previous copy
+                break
+            except (OSError, json.JSONDecodeError):
+                data = None
         if isinstance(data, dict):
             for k, v in data.items():
                 if k in cls.__dataclass_fields__:
@@ -146,10 +147,7 @@ class AppSettings:
     def save(self):
         p = self.path()
         try:
-            p.parent.mkdir(parents=True, exist_ok=True)
-            tmp = p.with_suffix(".tmp")
-            tmp.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
-            tmp.replace(p)
+            write_safely(p, json.dumps(asdict(self), indent=2))
         except OSError:
             pass
 

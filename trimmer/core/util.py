@@ -115,6 +115,38 @@ def sanitize_filename(name: str) -> str:
     return cleaned or "untitled"
 
 
+def write_safely(path: Path, text: str) -> None:
+    """Replace a small file so a crash or power cut can't leave it empty or half written: the new
+    text is flushed to disk before it takes the old file's place, and the old one is kept as
+    name.bak. Raises OSError."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    if path.exists() and path.stat().st_size > 0:
+        bak = path.with_name(path.name + ".bak")
+        try:
+            os.replace(path, bak)
+        except OSError:
+            pass
+    os.replace(tmp, path)
+
+
+def read_safely(path: Path) -> str:
+    """The file's text, or its .bak copy when the file is missing, empty or unreadable. Raises OSError."""
+    path = Path(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+        if text.strip():
+            return text
+    except OSError:
+        pass
+    return path.with_name(path.name + ".bak").read_text(encoding="utf-8")
+
+
 def safe_unlink(path: Path, attempts: int = 8, delay: float = 0.25) -> None:
     """Delete a file, retrying briefly while Windows still holds a handle.
 
