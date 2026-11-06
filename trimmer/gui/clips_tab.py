@@ -156,7 +156,7 @@ class ClipsTab(QWidget):
         b_desel = set_kind(QPushButton("Deselect all"), "ghost")
         b_desel.setToolTip("Back to the options for all clips  (Esc in the list)")
         b_desel.clicked.connect(lambda: self.deselect_all())
-        ll.addWidget(hbox("stretch", b_desel, b_rm, b_clear, stretch_end=False))
+        ll.addWidget(hbox(b_desel, b_rm, b_clear))      # under the list, from its left edge
         split.addWidget(left)
 
         # ---- right: preview, trim, output options
