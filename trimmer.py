@@ -62,8 +62,10 @@ def main():
     from trimmer.gui.main_window import MainWindow
     from trimmer.gui.widgets import apply_theme
 
-    if sys.platform == "win32":
-        # Its own taskbar entry and icon, instead of grouping under python(w).exe.
+    if sys.platform == "win32" and not getattr(sys, "frozen", False):
+        # Its own taskbar entry and icon, instead of grouping under python(w).exe. Not in the built
+        # Trimmer.exe: there Windows takes the icon from the exe itself, and a made-up ID that its
+        # Start menu shortcut doesn't carry leaves the running app with a blank taskbar icon.
         try:
             import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Trimmer.App")
