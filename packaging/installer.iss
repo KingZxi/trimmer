@@ -23,6 +23,7 @@ PrivilegesRequiredOverridesAllowed=dialog
 LicenseFile=..\LICENSE
 SetupIconFile=..\trimmer\gui\assets\trimmer.ico
 UninstallDisplayIcon={app}\Trimmer.exe
+UninstallDisplayName=Trimmer
 OutputDir=..\dist
 OutputBaseFilename=Trimmer-{#AppVersion}-setup
 Compression=lzma2
