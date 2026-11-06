@@ -20,6 +20,9 @@ First release on GitHub, with a Windows installer and a portable zip.
   options can be resized by dragging, the Clips preview and options can be resized too, the kept
   parts list only takes the room it needs, the Video column is shorter ("1080p60 h264"; the full
   details are in its tooltip), and status messages clear when you switch tabs.
+- New: when Windows stops Qt's video player from loading, the preview bar says "No sound" (hover for
+  why) and Logs\playback.txt has the details, instead of quietly showing a slower, silent preview.
+  The release build now checks that playback loads before it's published.
 - New: Replay merge has Deselect all, Remove and Clear right above its session list, and
   "Remove from the list" (Delete) in its right-click menu. The files stay where they are.
 - New: a "↺" button at the end of every Settings row that isn't on its default puts just that

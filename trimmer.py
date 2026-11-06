@@ -50,6 +50,10 @@ def _splash():
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--check-playback":
+        # Build self test (see .github/workflows/release.yml): can Qt's video player load here?
+        from trimmer.gui.playback import check
+        sys.exit(check(sys.argv[2]))
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -78,6 +82,8 @@ def main():
             icon.addFile(str(png))           # crisp at large sizes (Alt+Tab, high DPI taskbars)
         app.setWindowIcon(icon)
     settings = AppSettings.load()
+    from trimmer.gui.playback import write_report
+    write_report()                          # Logs\playback.txt says why, if the preview has no sound
     apply_theme(app, settings.theme)
     splash = _splash()                       # the logo while the window is being built
 

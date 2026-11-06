@@ -137,7 +137,7 @@ def clear_queue():
         pass
 
 
-LOG_PATTERNS = ("log (*).txt", "crash (*).txt")
+LOG_PATTERNS = ("log (*).txt", "crash (*).txt", "playback.txt")
 
 
 def log_files() -> List[Path]:

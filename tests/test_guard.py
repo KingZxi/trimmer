@@ -293,3 +293,23 @@ def test_auto3_preset_is_added_once(tmp_path, monkeypatch):
     del s.presets[st.AUTO3_PRESET]
     s.save()
     assert st.AUTO3_PRESET not in AppSettings.load().presets          # deleting it sticks
+
+
+def test_playback_check_reports_why_it_failed(tmp_path):
+    """Trimmer --check-playback (the build's self test) and Logs\\playback.txt say why there's no sound."""
+    import subprocess
+    root = Path(__file__).resolve().parent.parent
+    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen", "TRIMMER_DATA_DIR": str(tmp_path / "data")}
+    blocked = ("import sys, runpy; sys.modules['PySide6.QtMultimedia'] = None; "
+               "sys.argv = ['trimmer.py', '--check-playback', sys.argv[1]]; "
+               "runpy.run_path('trimmer.py', run_name='__main__')")
+    out = tmp_path / "check.txt"
+    r = subprocess.run([sys.executable, "-c", blocked, str(out)], cwd=root, env=env, timeout=120)
+    text = out.read_text(encoding="utf-8")
+    assert r.returncode == 1 and "Playback: FAILED" in text and "QtMultimedia" in text
+    code = ("import sys, os; sys.modules['PySide6.QtMultimedia'] = None; "
+            "from trimmer.gui import playback as pb; from trimmer.core.journal import log_files; "
+            "p = pb.write_report(); print(p.name, p.name in [f.name for f in log_files()], pb.NO_SOUND)")
+    r = subprocess.run([sys.executable, "-c", code], cwd=root, env=env, capture_output=True, text=True,
+                       timeout=120)
+    assert r.stdout.split()[:2] == ["playback.txt", "True"], r.stderr

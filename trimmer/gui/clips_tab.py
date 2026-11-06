@@ -24,15 +24,9 @@ from .widgets import (OWN_TIP, STAR, EncodeForm, FullScreen, HintTable, OptionBi
                       clean_opts,
                       clearable, copy_opts, hbox, label, show_in_folder)
 
-try:        # Windows Smart App Control can block Qt's multimedia DLLs
-    from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
-    from PySide6.QtMultimediaWidgets import QVideoWidget
-    HAVE_PLAYBACK = True
-except (ImportError, OSError):
-    from .fallback_player import FramePlayer as QMediaPlayer
-    from .fallback_player import FrameView as QVideoWidget
-    QAudioOutput = None
-    HAVE_PLAYBACK = False
+# Qt's player, or the silent frame fallback when Windows blocks its DLLs
+from .playback import (HAVE_PLAYBACK, NO_SOUND, NO_SOUND_TIP, PLAYBACK_ERROR, QAudioOutput, QMediaPlayer,
+                       QVideoWidget)
 from .worker import Task
 
 COLS = ["Name", "Length", "Size", "Video", "Audio tracks", "Trim", "Notes"]
@@ -234,9 +228,13 @@ class ClipsTab(QWidget):
         b_full = QPushButton("Full screen")
         b_full.setToolTip("Full screen  (F11 or double-click the video; Esc to leave)")
         b_full.clicked.connect(lambda: self.full.toggle())
+        no_sound = label(NO_SOUND, "muted")
+        no_sound.setToolTip(NO_SOUND_TIP + PLAYBACK_ERROR)
         stage.addWidget(hbox(self.b_play, b_back, b_fwd, self.time_label, "stretch",
-                             hear, self.preview_track, b_in, b_out, b_split, b_full, stretch_end=False))
-        if not HAVE_PLAYBACK:       # still-frame preview has no sound
+                             no_sound, hear, self.preview_track, b_in, b_out, b_split, b_full, stretch_end=False))
+        if HAVE_PLAYBACK:
+            no_sound.hide()
+        else:                       # still-frame preview has no sound
             hear.hide()
             self.preview_track.hide()
 

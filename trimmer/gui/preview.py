@@ -14,15 +14,9 @@ from .theme import set_kind
 from .widgets import FullScreen, Timeline, TrackPicker, card, hbox, label
 from .worker import Task
 
-try:        # same fallback as the Clips tab when Qt's multimedia DLLs are blocked
-    from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
-    from PySide6.QtMultimediaWidgets import QVideoWidget
-    HAVE_PLAYBACK = True
-except (ImportError, OSError):
-    from .fallback_player import FramePlayer as QMediaPlayer
-    from .fallback_player import FrameView as QVideoWidget
-    QAudioOutput = None
-    HAVE_PLAYBACK = False
+# Qt's player, or the silent frame fallback when Windows blocks its DLLs
+from .playback import (HAVE_PLAYBACK, NO_SOUND, NO_SOUND_TIP, PLAYBACK_ERROR, QAudioOutput, QMediaPlayer,
+                       QVideoWidget)
 
 
 class PreviewDialog(QDialog):
@@ -91,9 +85,13 @@ class PreviewDialog(QDialog):
         b_full.clicked.connect(lambda: self.full.toggle())
         b_close = QPushButton("Close")
         b_close.clicked.connect(self.close)
-        stage.addWidget(hbox(self.b_play, b_back, b_fwd, self.time_label, "stretch", hear, self.tracks, b_full,
-                             b_close, stretch_end=False))
-        if not HAVE_PLAYBACK:
+        no_sound = label(NO_SOUND, "muted")
+        no_sound.setToolTip(NO_SOUND_TIP + PLAYBACK_ERROR)
+        stage.addWidget(hbox(self.b_play, b_back, b_fwd, self.time_label, "stretch", no_sound, hear, self.tracks,
+                             b_full, b_close, stretch_end=False))
+        if HAVE_PLAYBACK:
+            no_sound.hide()
+        else:
             hear.hide()
             self.tracks.hide()
 

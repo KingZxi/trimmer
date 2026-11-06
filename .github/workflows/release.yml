@@ -46,6 +46,14 @@ jobs:
         shell: pwsh
         run: powershell -ExecutionPolicy Bypass -File packaging\build.ps1
 
+      - name: Check the built app can play video
+        shell: pwsh
+        run: |
+          $out = Join-Path $PWD "playback-check.txt"
+          $p = Start-Process dist\Trimmer\Trimmer.exe -ArgumentList "--check-playback", "`"$out`"" -Wait -PassThru
+          if (Test-Path $out) { Get-Content $out } else { Write-Host "Trimmer.exe wrote no report" }
+          if ($p.ExitCode -ne 0) { throw "Trimmer.exe can't load Qt's video player (exit code $($p.ExitCode), details above)" }
+
       - name: Checksums and release notes
         shell: pwsh
         run: |
