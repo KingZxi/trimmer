@@ -11,6 +11,15 @@ First release on GitHub, with a Windows installer and a portable zip.
   trims clips (it also stops watching the replay folder until the tab is shown again).
 - New: run logs and crash reports older than 30 days are deleted when Trimmer starts. Settings >
   General changes the age or turns it off, and "Delete all logs now" clears them.
+- New: a Help menu with Getting started (F1), the keyboard shortcuts and the OBS tips, and a Quick
+  start in the README.
+- New: a cleaner, bolder icon that stays sharp at taskbar sizes, the logo in the toolbar, and a
+  small splash while Trimmer starts.
+- Changed: tidier layout. The Add files / Add folder buttons are only in the toolbar (they add to
+  the tab you're on), the Replay merge session list gets more room and its list, timeline and
+  options can be resized by dragging, the Clips preview and options can be resized too, the kept
+  parts list only takes the room it needs, the Video column is shorter ("1080p60 h264"; the full
+  details are in its tooltip), and status messages clear when you switch tabs.
 - Changed: the Settings pages scroll, so the dialog and its Save button fit on smaller screens.
 - Fixed: "Original" audio rips of FLAC tracks (common in MKV recordings) failed their check,
   because the copied file still claimed the whole source's length.

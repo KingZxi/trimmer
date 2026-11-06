@@ -59,6 +59,24 @@ Windows Smart App Control allows it). For a desktop icon, right-click
 `Trimmer.pyw` → Send to → Desktop (create shortcut). Once it's running you can
 pin it to the taskbar, where it shows Trimmer's own icon.
 
+## Quick start
+
+**Trim a clip.** Drop it on the window (or **Add files**). Play it with
+Space, press **Mark in** (I) where the part you want starts and **Mark out**
+(O) where it ends, then **Add to queue**. The Queue tab saves it next to the
+original, or in the folder set with **Output folder**.
+
+**Make it smaller.** Before queueing, tick **Compress** and pick a preset such
+as *Discord 10 MB (720p)*. **Estimate size** shows roughly what you'll get.
+
+**Join Replay Buffer saves.** Drop your OBS replays (or their folder) on the
+**Replay merge** tab. Overlapping replays become sessions; tick the ones you
+want and press **Add ticked sessions to queue**. Each becomes one video with
+nothing repeated or missing.
+
+The same steps, plus the keyboard shortcuts, are in the app under **Help**
+(F1).
+
 ## What it does
 
 ### Clips tab

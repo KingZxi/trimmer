@@ -4,7 +4,7 @@ import hashlib
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFrame,
                                QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMenu, QMessageBox,
@@ -102,9 +102,21 @@ class ClipsTab(QWidget):
         self.shared = copy_opts(DEFAULT_OPTS)   # options of every clip without its own
         self._build()
 
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not self._sized:              # first show: size the panes once the window is laid out
+            self._sized = True
+            QTimer.singleShot(0, self._first_sizes)
+
+    def _first_sizes(self):
+        w, h = self.hsplit.width(), self.vsplit.height()
+        self.hsplit.setSizes([int(w * 0.42), w - int(w * 0.42)])
+        self.vsplit.setSizes([int(h * 0.5), h - int(h * 0.5)])
+
     # ------------------------------------------------------------- layout
     def _build(self):
         split = QSplitter(Qt.Horizontal, self)
+        self.hsplit = split
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 14, 16, 14)
         outer.addWidget(split)
@@ -115,7 +127,7 @@ class ClipsTab(QWidget):
         ll.setContentsMargins(0, 0, 0, 0)
         ll.setSpacing(10)
         self.table = HintTable(0, len(COLS))
-        self.table.set_hint("Drop clips here", "Single files, a handful, or whole folders")
+        self.table.set_hint("Drop clips here", "Single files, a handful, or whole folders.  New here? Press F1")
         self.table.setHorizontalHeaderLabels(COLS)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.easy_deselect = True
@@ -137,10 +149,6 @@ class ClipsTab(QWidget):
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._menu)
         ll.addWidget(self.table, 1)
-        b_add = set_kind(QPushButton("Add files…"), "ghost")
-        b_add.clicked.connect(self.main.add_files_dialog)
-        b_folder = set_kind(QPushButton("Add folder…"), "ghost")
-        b_folder.clicked.connect(self.main.add_folder_dialog)
         b_rm = set_kind(QPushButton("Remove"), "ghost")
         b_rm.clicked.connect(self.remove_selected)
         b_clear = set_kind(QPushButton("Clear"), "ghost")
@@ -148,7 +156,7 @@ class ClipsTab(QWidget):
         b_desel = set_kind(QPushButton("Deselect all"), "ghost")
         b_desel.setToolTip("Back to the options for all clips  (Esc in the list)")
         b_desel.clicked.connect(lambda: self.deselect_all())
-        ll.addWidget(hbox(b_add, b_folder, "stretch", b_desel, b_rm, b_clear, stretch_end=False))
+        ll.addWidget(hbox("stretch", b_desel, b_rm, b_clear, stretch_end=False))
         split.addWidget(left)
 
         # ---- right: preview, trim, output options
@@ -162,12 +170,28 @@ class ClipsTab(QWidget):
         stage = QVBoxLayout(self.stage)
         stage.setContentsMargins(0, 0, 0, 0)
         stage.setSpacing(10)
-        rl.addWidget(self.stage, 4)
+        # Preview above, trim and options below, with a handle between them to give either more room.
+        holder = QWidget()                     # FullScreen moves the stage out of this layout and back
+        hl = QVBoxLayout(holder)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.addWidget(self.stage)
+        lower = QWidget()
+        lowl = QVBoxLayout(lower)
+        lowl.setContentsMargins(0, 0, 0, 0)
+        lowl.setSpacing(10)
+        self.vsplit = QSplitter(Qt.Vertical)
+        self.vsplit.setChildrenCollapsible(False)
+        self.vsplit.addWidget(holder)
+        self.vsplit.addWidget(lower)
+        self.vsplit.setStretchFactor(0, 3)
+        self.vsplit.setStretchFactor(1, 2)
+        self._sized = False
+        rl.addWidget(self.vsplit, 1)
 
         pv, pvl = card(margins=(0, 0, 0, 0), spacing=0)
         pv.setObjectName("video")
         self.video = QVideoWidget()
-        self.video.setMinimumHeight(220)
+        self.video.setMinimumHeight(160)
         self.player = QMediaPlayer(self)
         if QAudioOutput is not None:
             self.audio_out = QAudioOutput(self)
@@ -230,18 +254,18 @@ class ClipsTab(QWidget):
                               stretch_end=False))
         self.seg_list = QListWidget()
         self.seg_list.setFrameShape(QFrame.NoFrame)
-        self.seg_list.setMaximumHeight(64)
+        self.seg_list.hide()                  # shown once there are kept parts
         partsl.addWidget(self.seg_list)
         self.trim_info = label("", "muted", wrap=True)
         partsl.addWidget(self.trim_info)
-        rl.addWidget(parts)
+        lowl.addWidget(parts)
 
         self.out_name = QLineEdit()
         clearable(self.out_name)
         self.out_name.setToolTip("Name for the saved video and ripped tracks (F2). Leave empty to keep "
                                  "the original name.")
         self.out_name.textEdited.connect(self._rename)
-        rl.addWidget(hbox(label("Save as", "muted"), self.out_name, stretch_end=False))
+        lowl.addWidget(hbox(label("Save as", "muted"), self.out_name, stretch_end=False))
 
         # Output options (scrolls when the window is short)
         scroll = QScrollArea()
@@ -311,7 +335,7 @@ class ClipsTab(QWidget):
         al.addWidget(self.delete_orig)
         al.addStretch(1)
         scroll.setWidget(acts)
-        rl.addWidget(scroll, 3)
+        lowl.addWidget(scroll, 1)
         self.form = OptionBinding(self._opt_changed)
         self.form.check("save_video", self.g_out)
         self.form.check("mix", self.mix)
@@ -523,12 +547,15 @@ class ClipsTab(QWidget):
         vals = [(STAR if e.opts is not None else "") + e.path.name + part
                 + (f"  →  {e.out_name}" if e.out_name else ""),
                 format_hms(i.duration), format_size(i.size),
-                f"{i.resolution} {i.fps:.0f}fps {i.video_codec}" if i.has_video else "audio only",
+                f"{i.height}p{i.fps:.0f} {i.video_codec}" if i.has_video else "audio only",
                 f"{len(i.audio)}: {tracks}", trim,
                 "; ".join(n for n in (self.main.queue.note_for([e.path]), e.note) if n)]
         for c, v in enumerate(vals):
             item = QTableWidgetItem(v)
-            item.setToolTip(v if c else str(e.path) + (f"\n{OWN_TIP}" if e.opts is not None else ""))
+            tip = v if c else str(e.path) + (f"\n{OWN_TIP}" if e.opts is not None else "")
+            if c == 3 and i.has_video:
+                tip = f"{i.resolution}, {i.fps:.2f} fps, {i.video_codec}"
+            item.setToolTip(tip)
             self.table.setItem(r, c, item)
 
     def refresh_queue_notes(self):
@@ -803,6 +830,7 @@ class ClipsTab(QWidget):
             self.timeline.set_peek([], [])
             self.seg_list.clear()
             self.b_seg_split.setEnabled(False)
+            self.seg_list.hide()
             self.trim_info.setText("Select one clip to preview and trim it." if self.entries else "")
             return
         self.player.setSource(QUrl.fromLocalFile(str(e.path.resolve())))
@@ -907,6 +935,9 @@ class ClipsTab(QWidget):
         e = self.current
         self.seg_list.clear()
         self.b_seg_split.setEnabled(bool(e) and len(e.segments) > 1)
+        self.seg_list.setVisible(bool(e and e.segments))
+        if e and e.segments:                  # as tall as its parts, up to 3 rows (then it scrolls)
+            self.seg_list.setFixedHeight(8 + 26 * min(3, len(e.segments)))
         if not e:
             return
         for a, b in e.segments:

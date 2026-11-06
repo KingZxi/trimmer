@@ -30,6 +30,7 @@ class SettingsDialog(QDialog):
         lay.setContentsMargins(18, 14, 18, 16)
         lay.setSpacing(12)
         tabs = QTabWidget()
+        self.tabs = tabs
         tabs.setDocumentMode(True)
         lay.addWidget(tabs)
         pages = [(self._general(), "General"), (self._compression(), "Compression"),
@@ -229,6 +230,11 @@ class SettingsDialog(QDialog):
         self.b_clear_logs.clicked.connect(self._clear_logs)
         f.addRow("Logs", hbox(self.auto_logs, self.keep_logs, self.b_clear_logs, stretch_end=False))
         return w
+
+    def show_tab(self, title: str):
+        for i in range(self.tabs.count()):
+            if self.tabs.tabText(i) == title:
+                self.tabs.setCurrentIndex(i)
 
     def _clear_logs(self):
         n = len(log_files())

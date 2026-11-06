@@ -8,9 +8,10 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QLabel, QMainWindow, QMessageBox,
-                               QSizePolicy, QSystemTrayIcon, QTabWidget, QToolBar, QWidget)
+                               QMenu, QSizePolicy, QSystemTrayIcon, QTabWidget, QToolBar, QToolButton,
+                               QWidget)
 
 from ..core import ffmpeg as ff
 from ..core import jobs as J
@@ -21,6 +22,7 @@ from ..core.util import VIDEO_EXTENSIONS, find_video_files, recycle_or_delete, s
 from .clips_tab import ClipsTab
 from .merge_tab import PREVIEW_PREFIX, MergeTab
 from .queue_tab import QueueTab
+from .help import GETTING_STARTED, SHORTCUTS, HelpDialog
 from .settings_dialog import SettingsDialog, TipsDialog
 from .system_hooks import QueueGuard
 from .widgets import apply_theme, label
@@ -80,6 +82,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.merge, "Replay merge")
         self.tabs.addTab(self.queue, "Queue")
         self.setCentralWidget(self.tabs)
+        self.tabs.currentChanged.connect(lambda _: self.statusBar().clearMessage())   # no stale messages
         self.tabs.setTabVisible(self.tabs.indexOf(self.merge), self.settings.show_replay_merge)
         for tab in (self.clips, self.merge):
             tab.queue_jobs.connect(self._queue_jobs)
@@ -111,6 +114,12 @@ class MainWindow(QMainWindow):
         tb.setContextMenuPolicy(Qt.PreventContextMenu)
         tb.setToolButtonStyle(Qt.ToolButtonTextOnly)
         self.addToolBar(tb)
+        logo = Path(__file__).resolve().parent / "assets" / "trimmer.png"
+        if logo.exists():
+            mark = QLabel()
+            mark.setPixmap(QIcon(str(logo)).pixmap(22, 22))
+            mark.setContentsMargins(10, 0, 2, 0)
+            tb.addWidget(mark)
         tb.addWidget(label("Trimmer", "brand"))
 
         def act(text, fn, key=None, tip=None):
@@ -122,14 +131,29 @@ class MainWindow(QMainWindow):
             tb.addAction(a)
             return a
 
-        act("Add files", self.add_files_dialog, "Ctrl+O")
-        act("Add folder", self.add_folder_dialog, "Ctrl+Shift+O")
+        act("Add files", self.add_files_dialog, "Ctrl+O", "Add clips to the tab you're on (or drop them anywhere)")
+        act("Add folder", self.add_folder_dialog, "Ctrl+Shift+O", "Add every clip in a folder to the tab you're on")
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         tb.addWidget(spacer)
-        act("Output folder", self.pick_output, tip="Where finished files are saved")
-        act("OBS tips", lambda: TipsDialog(self).exec())
-        act("Settings", self.open_settings, "Ctrl+,")
+        act("Output folder…", self.pick_output, tip="Choose where finished files are saved")
+        help_menu = QMenu(self)
+        a = help_menu.addAction("Getting started", self.show_getting_started)
+        a.setShortcut(QKeySequence("F1"))
+        self.addAction(a)                      # F1 works without opening the menu
+        help_menu.addAction("Keyboard shortcuts", lambda: HelpDialog("Keyboard shortcuts", SHORTCUTS, self,
+                                                                      (560, 640)).exec())
+        help_menu.addAction("OBS settings tips", lambda: TipsDialog(self).exec())
+        help_menu.addSeparator()
+        help_menu.addAction("About Trimmer", lambda: self.open_settings(tab="About"))
+        b_help = QToolButton()
+        b_help.setText("Help")
+        b_help.setMenu(help_menu)
+        b_help.setPopupMode(QToolButton.InstantPopup)
+        b_help.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        b_help.setStyleSheet("QToolButton::menu-indicator { image: none; width: 0; }")
+        tb.addWidget(b_help)
+        act("Settings", lambda: self.open_settings(), "Ctrl+,")
 
     def output_dir(self) -> str:
         return self.settings.output_dir
@@ -263,9 +287,15 @@ class MainWindow(QMainWindow):
             tray.showMessage("Trimmer", "Queue finished. " + summary)
 
     # ------------------------------------------------------------- settings
-    def open_settings(self):
+    def show_getting_started(self):
+        HelpDialog("Getting started", GETTING_STARTED, self).exec()
+
+    def open_settings(self, tab: str = None):
         old_theme, old_ff = self.settings.theme, self.settings.ffmpeg_dir
-        accepted = SettingsDialog(self.settings, self.encoders, self).exec()
+        dialog = SettingsDialog(self.settings, self.encoders, self)
+        if tab:
+            dialog.show_tab(tab)
+        accepted = dialog.exec()
         self.queue.refresh_savings()      # the Reset button may have changed it
         if accepted:
             if self.settings.ffmpeg_dir != old_ff:

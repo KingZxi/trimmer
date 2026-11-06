@@ -6,11 +6,11 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QObject, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QFileDialog, QFrame,
                                QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QProgressDialog, QPushButton,
-                               QRadioButton, QSplitter, QTreeWidgetItem, QVBoxLayout,
+                               QRadioButton, QScrollArea, QSplitter, QTreeWidgetItem, QVBoxLayout,
                                QWidget)
 
 from ..core import merge as mg
@@ -42,7 +42,7 @@ class SessionView(QWidget):
         self.session = None
         self.used = {}              # clip path -> (start, end) used in the merge, or None
         self.marker = None          # (clip path, seconds) of an open viewer
-        self.setMinimumHeight(120)
+        self.setMinimumHeight(60)
         self.setMouseTracking(True)
 
     def set_used(self, used):
@@ -184,6 +184,17 @@ class MergeTab(QWidget):
         if self.main.settings.show_replay_merge:
             self._start_watch_from_settings()
 
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not self._sized:              # first show: most room to the session list
+            self._sized = True
+            QTimer.singleShot(0, self._first_sizes)
+
+    def _first_sizes(self):
+        h, opts = self.split.height(), self.g_opts.minimumSizeHint().height()
+        view = max(190, int((h - opts) * 0.45))  # room for about four clips' bars
+        self.split.setSizes([max(110, h - opts - view), view, opts])
+
     def set_shown(self, shown: bool):
         """Showing the tab watches the replay folder again (if that's on); hiding stops it
         without changing the saved setting."""
@@ -196,15 +207,11 @@ class MergeTab(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(10)
-        b_folder = set_kind(QPushButton("Add replay folder…"), "ghost")
-        b_folder.clicked.connect(self.main.add_folder_dialog)
-        b_files = set_kind(QPushButton("Add replay files…"), "ghost")
-        b_files.clicked.connect(self.main.add_files_dialog)
         b_clear = set_kind(QPushButton("Clear"), "ghost")
         b_clear.clicked.connect(self.clear)
         lay.addWidget(hbox(label("Overlapping replays are grouped into sessions. Each becomes one video, "
                                  "or separate clips without the repeats.", "muted"),
-                           "stretch", b_folder, b_files, b_clear, stretch_end=False))
+                           "stretch", b_clear, stretch_end=False))
 
         self.watch_box = QCheckBox("Watch folder")
         self.watch_box.setToolTip("Add new replays from this folder automatically as OBS saves them")
@@ -253,9 +260,15 @@ class MergeTab(QWidget):
         vcl.addWidget(hbox(self.view_hint, "stretch", self.b_preview, stretch_end=False))
         self.view = SessionView()
         self.view.clip_clicked.connect(lambda c: self.open_clip(c))
-        vcl.addWidget(self.view)
+        view_scroll = QScrollArea()             # many clips scroll instead of pushing the list away
+        view_scroll.setWidgetResizable(True)
+        view_scroll.setFrameShape(QFrame.NoFrame)
+        view_scroll.setWidget(self.view)
+        view_scroll.setMinimumHeight(60)
+        vcl.addWidget(view_scroll)
         split.addWidget(vc)
-        split.setSizes([300, 170])
+        split.setChildrenCollapsible(False)
+        self.split = split
         lay.addWidget(split, 1)
 
         self.g_opts = g = QGroupBox("Options for all sessions")
@@ -327,7 +340,13 @@ class MergeTab(QWidget):
         self.info_file = QCheckBox("Write an info file showing where each clip landed")
         self.delete_orig = QCheckBox("Delete original clips once the result is saved and checked")
         gl.addWidget(hbox(self.info_file, self.delete_orig))
-        lay.addWidget(g)
+        # Sessions, their timeline and the options share one splitter: drag the handles for more room.
+        split.addWidget(g)
+        self.tree.setMinimumHeight(110)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 1)
+        split.setStretchFactor(2, 0)
+        self._sized = False
         self.form = OptionBinding(self._opt_changed)
         self.form.add("mode", lambda: "trim" if self.r_trim.isChecked() else "merge",
                       lambda v: (self.r_trim if v == "trim" else self.r_merge).setChecked(True), self.r_trim.toggled)

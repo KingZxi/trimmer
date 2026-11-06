@@ -320,7 +320,7 @@ class QueueTab(QWidget):
         self.when_done.setCurrentIndex(max(0, self.when_done.findData(ui.get("when_queue_done", "nothing"))))
         self.when_done.currentIndexChanged.connect(
             lambda _: self._save_ui("when_queue_done", self.when_done.currentData()))
-        b_out = set_kind(QPushButton("Output folder"), "ghost")
+        b_out = set_kind(QPushButton("Open output folder"), "ghost")
         b_out.clicked.connect(lambda: self.open_output())
         b_logs = set_kind(QPushButton("Logs"), "ghost")
         b_logs.clicked.connect(lambda: self._open(logs_dir()))

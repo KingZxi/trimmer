@@ -1516,3 +1516,29 @@ def test_replay_merge_tab_can_be_hidden(monkeypatch):
     w.settings.show_replay_merge, w.settings.watch_enabled = True, False
     w.settings.save()
     w.close()
+
+
+def test_help_menu_and_tidier_layout(monkeypatch):
+    from PySide6.QtWidgets import QPushButton, QToolButton
+    from trimmer.gui import help as help_mod
+    from trimmer.gui import settings_dialog
+    w = window(WORK / "out_help")
+    b_help = next(b for b in w.findChildren(QToolButton) if b.text() == "Help")
+    names = [a.text() for a in b_help.menu().actions() if a.text()]
+    assert names == ["Getting started", "Keyboard shortcuts", "OBS settings tips", "About Trimmer"]
+    shown = []
+    monkeypatch.setattr(help_mod.HelpDialog, "exec", lambda d: shown.append(d.windowTitle()))
+    next(a for a in w.actions() if a.shortcut().toString() == "F1").trigger()
+    assert shown == ["Getting started"]
+    opened = []
+    monkeypatch.setattr(settings_dialog.SettingsDialog, "exec",
+                        lambda d: opened.append(d.tabs.tabText(d.tabs.currentIndex())) or False)
+    next(a for a in b_help.menu().actions() if a.text() == "About Trimmer").trigger()
+    assert opened == ["About"]
+    # one place to add files: the toolbar
+    for tab in (w.clips, w.merge):
+        assert not [b for b in tab.findChildren(QPushButton) if b.text().startswith("Add") and "…" in b.text()]
+    w.show_status("Found 2 session(s)")
+    w.tabs.setCurrentWidget(w.queue)
+    assert w.statusBar().currentMessage() == ""
+    w.close()

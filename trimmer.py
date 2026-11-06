@@ -15,6 +15,40 @@ ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 ICON = ROOT / "trimmer" / "gui" / "assets" / "trimmer.ico"
 
 
+def _splash():
+    """A small splash with the logo and name, shown while the main window loads."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
+    from PySide6.QtWidgets import QApplication, QSplashScreen
+    png = ICON.with_suffix(".png")
+    if not png.exists():
+        return None
+    dpr = QApplication.primaryScreen().devicePixelRatio() if QApplication.primaryScreen() else 1.0
+    w, h = 320, 200
+    pm = QPixmap(int(w * dpr), int(h * dpr))
+    pm.setDevicePixelRatio(dpr)
+    pm.fill(QColor("#17181c"))
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.SmoothPixmapTransform)
+    p.drawPixmap((w - 88) // 2, 34, 88, 88, QPixmap(str(png)))
+    font = QFont()
+    font.setPointSize(15)
+    font.setBold(True)
+    p.setFont(font)
+    p.setPen(QColor("#f2f3f5"))
+    p.drawText(0, 132, w, 28, Qt.AlignHCenter | Qt.AlignVCenter, "Trimmer")
+    font.setPointSize(9)
+    font.setBold(False)
+    p.setFont(font)
+    p.setPen(QColor("#8b8f98"))
+    p.drawText(0, 160, w, 20, Qt.AlignHCenter | Qt.AlignVCenter, "Loading…")
+    p.end()
+    splash = QSplashScreen(pm)
+    splash.show()
+    QApplication.processEvents()
+    return splash
+
+
 def main():
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication, QMessageBox
@@ -38,9 +72,14 @@ def main():
     app.setApplicationName("Trimmer")
     app.setApplicationVersion(__version__)
     if ICON.exists():
-        app.setWindowIcon(QIcon(str(ICON)))
+        icon = QIcon(str(ICON))
+        png = ICON.with_suffix(".png")
+        if png.exists():
+            icon.addFile(str(png))           # crisp at large sizes (Alt+Tab, high DPI taskbars)
+        app.setWindowIcon(icon)
     settings = AppSettings.load()
     apply_theme(app, settings.theme)
+    splash = _splash()                       # the logo while the window is being built
 
     def excepthook(exc_type, exc, tb):
         path = write_crash_log(exc_type, exc, tb)
@@ -57,6 +96,8 @@ def main():
     sys.excepthook = excepthook
     win = MainWindow(settings)
     win.show()
+    if splash is not None:
+        splash.finish(win)
     win.startup_checks()
     if len(sys.argv) > 1:
         win._route(sys.argv[1:])
