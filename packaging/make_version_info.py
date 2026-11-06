@@ -15,7 +15,7 @@ text = f"""VSVersionInfo(
   kids=[
     StringFileInfo([StringTable('040904B0', [
       StringStruct('CompanyName', '{AUTHOR}'),
-      StringStruct('FileDescription', '{APP_NAME}: trim, merge, compress and rip OBS clips'),
+      StringStruct('FileDescription', '{APP_NAME}'),
       StringStruct('FileVersion', '{__version__}'),
       StringStruct('InternalName', '{APP_NAME}'),
       StringStruct('LegalCopyright', '{COPYRIGHT} (GPL-3.0)'),
