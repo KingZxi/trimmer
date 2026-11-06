@@ -1,7 +1,7 @@
 """Settings dialog and the OBS tips page."""
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QKeySequence
+from PySide6.QtGui import QFont, QKeySequence
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame,
                                QFileDialog, QFormLayout, QGroupBox, QInputDialog, QKeySequenceEdit, QLabel, QLineEdit,
                                QListWidget, QSpinBox,
@@ -104,7 +104,16 @@ class SettingsDialog(QDialog):
             tabs.addTab(area, title)
         tallest = max(page.sizeHint().height() for page, _ in pages)
         room = self.screen().availableGeometry().height() - 60 if self.screen() else 900
-        self.resize(max(620, self.width()), max(420, min(tallest + 130, room)))
+        # Every tab must show. Measure them in the bold font the theme draws them in (Qt sizes tabs with
+        # the plain font otherwise), and widen the dialog instead of scrolling the first tabs away.
+        bar = tabs.tabBar()
+        bold = bar.font()
+        bold.setWeight(QFont.DemiBold)
+        bar.setFont(bold)
+        bar.setUsesScrollButtons(False)
+        bar.setElideMode(Qt.ElideNone)
+        self.setMinimumWidth(bar.sizeHint().width() + 16 + 36 + 24)
+        self.resize(max(620, self.width(), self.minimumWidth()), max(420, min(tallest + 130, room)))
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Save).setProperty("kind", "primary")
         bb.accepted.connect(self._save)

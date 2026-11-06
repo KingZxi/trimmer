@@ -25,6 +25,7 @@ First release on GitHub, with a Windows installer and a portable zip.
   The release build now checks that playback loads before it's published.
 - Fixed: the Windows build's preview had no sound and was slow, because a part of Qt the video
   player needs had been left out of the build.
+- Fixed: the Settings tabs could scroll General and Compression out of sight on Windows.
 - Fixed: the installed Trimmer.exe showed a blank icon on the taskbar while running.
 - Changed: the Windows build compiles its own PyInstaller launcher, which antivirus programs
   mistake for malware far less often than the shared prebuilt one.
