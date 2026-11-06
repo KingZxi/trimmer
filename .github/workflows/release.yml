@@ -44,6 +44,8 @@ jobs:
 
       - name: Build
         shell: pwsh
+        env:
+          TRIMMER_OWN_BOOTLOADER: "1"   # fewer antivirus false alarms than the prebuilt launcher
         run: powershell -ExecutionPolicy Bypass -File packaging\build.ps1
 
       - name: Check the built app can play video
