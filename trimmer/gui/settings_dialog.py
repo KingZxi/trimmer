@@ -5,22 +5,78 @@ from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame,
                                QFileDialog, QFormLayout, QGroupBox, QInputDialog, QKeySequenceEdit, QLabel, QLineEdit,
                                QListWidget, QSpinBox,
-                               QMessageBox, QPushButton, QScrollArea, QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
+                               QMessageBox, QPushButton, QScrollArea, QSizePolicy, QTabWidget, QTextBrowser, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from .. import APP_NAME, AUTHOR, AUTHOR_URL, COPYRIGHT, LICENSE_NAME, __version__
 from ..core import ffmpeg as ff
 from ..core import savings
 from ..core.encode import EncodeSettings
 from ..core.render import AUDIO_RIP_FORMATS
-from ..core.settings import default_presets
+from ..core.settings import AppSettings, default_presets
 from ..core.journal import clean_logs, log_files
 from ..core.util import app_data_dir
 from .system_hooks import DEFAULT_IGNORE, IS_WINDOWS, play_chime
+from .theme import set_kind
 from .widgets import EncodeForm, hbox, label
 
 
+def _value(w):
+    """A settings control's current value (comparable between two dialogs)."""
+    if isinstance(w, (QCheckBox, QGroupBox)):
+        return w.isChecked()
+    if isinstance(w, QComboBox):
+        return w.currentIndex()
+    if isinstance(w, (QSpinBox, QDoubleSpinBox)):
+        return round(w.value(), 4)
+    if isinstance(w, QLineEdit):
+        return w.text().strip()
+    if isinstance(w, QKeySequenceEdit):
+        return w.keySequence().toString(QKeySequence.PortableText)
+    return None
+
+
+def _set_value(w, v):
+    if isinstance(w, (QCheckBox, QGroupBox)):
+        w.setChecked(v)
+    elif isinstance(w, QComboBox):
+        w.setCurrentIndex(v)
+    elif isinstance(w, (QSpinBox, QDoubleSpinBox)):
+        w.setValue(v)
+    elif isinstance(w, QLineEdit):
+        w.setText(v)
+    elif isinstance(w, QKeySequenceEdit):
+        w.setKeySequence(QKeySequence(v))
+
+
+def _changed_signal(w):
+    if isinstance(w, (QCheckBox, QGroupBox)):
+        return w.toggled
+    if isinstance(w, QComboBox):
+        return w.currentIndexChanged
+    if isinstance(w, (QSpinBox, QDoubleSpinBox)):
+        return w.valueChanged
+    if isinstance(w, QLineEdit):
+        return w.textChanged
+    return w.keySequenceChanged
+
+
+def _shown(w, v) -> str:
+    """How a default value reads to a person, for the reset button's tooltip."""
+    if isinstance(w, (QCheckBox, QGroupBox)):
+        return "on" if v else "off"
+    if isinstance(w, QComboBox):
+        return w.itemText(v)
+    if isinstance(w, (QSpinBox, QDoubleSpinBox)):
+        return f"{w.prefix()}{w.textFromValue(v)}{w.suffix()}"
+    return f'"{v}"' if v else "empty"
+
+
+CONTROLS = (QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QKeySequenceEdit)
+
+
 class SettingsDialog(QDialog):
-    def __init__(self, settings, encoders, parent=None):
+    def __init__(self, settings, encoders, parent=None, _defaults=False):
         super().__init__(parent)
         self.s = settings
         self.encoders = encoders
@@ -35,6 +91,8 @@ class SettingsDialog(QDialog):
         lay.addWidget(tabs)
         pages = [(self._general(), "General"), (self._compression(), "Compression"),
                  (self._merge(), "Replay merge"), (self._queue(), "Queue"), (self._about(), "About")]
+        if not _defaults:
+            self._add_resets([page for page, _ in pages])
         for page, title in pages:
             # Each page scrolls, so the dialog (and its Save button) fits on small screens.
             area = QScrollArea()
@@ -231,6 +289,70 @@ class SettingsDialog(QDialog):
         f.addRow("Logs", hbox(self.auto_logs, self.keep_logs, self.b_clear_logs, stretch_end=False))
         return w
 
+    # ------------------------------------------------- restore defaults
+    def _controls(self):
+        return {k: v for k, v in vars(self).items() if isinstance(v, CONTROLS)
+                or (isinstance(v, QGroupBox) and v.isCheckable())}
+
+    def _add_resets(self, pages):
+        """A small ↺ button at the end of every row whose setting isn't the default; it puts that
+        row back to the default (nothing is saved until Save)."""
+        ref = SettingsDialog(AppSettings(), self.encoders, _defaults=True)
+        defaults = {k: _value(w) for k, w in ref._controls().items()}
+        shown = {k: _shown(w, defaults[k]) for k, w in ref._controls().items()}
+        self._default_enc = ref.enc.settings().to_dict()
+        ref.deleteLater()
+        controls = {w: k for k, w in self._controls().items() if k in defaults}
+        self.resets = {}
+        for form in [f for page in pages for f in page.findChildren(QFormLayout)]:
+            for row in range(form.rowCount()):
+                item = form.itemAt(row, QFormLayout.FieldRole)
+                field = item.widget() if item is not None else None
+                if field is None:
+                    continue
+                inside = [w for w in [field] + field.findChildren(QWidget) if w in controls]
+                if not inside:
+                    continue
+                keys = [controls[w] for w in inside]
+                b = QToolButton()
+                b.setText("↺")
+                b.setAutoRaise(True)
+                b.setFixedSize(28, 28)
+                b.setStyleSheet("QToolButton { padding: 0; font-size: 12pt; }")
+                b.setCursor(Qt.PointingHandCursor)
+                b.setToolTip("Restore the default: " + ", ".join(shown[k] for k in keys))
+                policy = b.sizePolicy()
+                policy.setRetainSizeWhenHidden(True)      # rows don't shift as it comes and goes
+                b.setSizePolicy(policy)
+                form.removeWidget(field)
+                form.setWidget(row, QFormLayout.FieldRole, hbox(field, b, stretch_end=False))
+                field.setSizePolicy(QSizePolicy.Expanding, field.sizePolicy().verticalPolicy())
+
+                def refresh(_=None, b=b, keys=keys):
+                    b.setVisible(any(_value(getattr(self, k)) != defaults[k] for k in keys))
+
+                def restore(_=False, keys=keys, refresh=refresh):
+                    for k in keys:
+                        _set_value(getattr(self, k), defaults[k])
+                    refresh()
+                b.clicked.connect(restore)
+                for k in keys:
+                    _changed_signal(getattr(self, k)).connect(refresh)
+                refresh()
+                for k in keys:
+                    self.resets[k] = b
+        # The custom compression settings: one button for the whole form.
+        self.b_enc_default.clicked.connect(lambda: (self.enc.set_settings(EncodeSettings(**self._default_enc)),
+                                                    self._enc_refresh()))
+        for w in self.enc.findChildren(QWidget):   # the form's own controls
+            if isinstance(w, CONTROLS):
+                _changed_signal(w).connect(self._enc_refresh)
+        self._enc_refresh()
+
+    def _enc_refresh(self, *_):
+        if hasattr(self, "_default_enc"):
+            self.b_enc_default.setVisible(self.enc.settings().to_dict() != self._default_enc)
+
     def show_tab(self, title: str):
         for i in range(self.tabs.count()):
             if self.tabs.tabText(i) == title:
@@ -256,7 +378,11 @@ class SettingsDialog(QDialog):
     def _compression(self):
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.addWidget(QLabel("Custom settings (used when 'Custom (Settings)' is picked):"))
+        self.b_enc_default = set_kind(QPushButton("↺ Restore default"), "ghost")
+        self.b_enc_default.setToolTip("Put the custom compression settings back to the defaults (H.265, CRF 23)")
+        self.b_enc_default.hide()
+        lay.addWidget(hbox(QLabel("Custom settings (used when 'Custom (Settings)' is picked):"), "stretch",
+                           self.b_enc_default, stretch_end=False))
         self.enc = EncodeForm(self.encoders)
         self.enc.set_settings(self.s.encode_settings())
         lay.addWidget(self.enc)
@@ -316,7 +442,7 @@ class SettingsDialog(QDialog):
                                    "nothing else changes, and ticking it brings everything back.")
         f.addRow("", self.show_merge)
         self.packets = QCheckBox("Match clips frame by frame (exact, lossless) when they share footage")
-        self.packets.setChecked(True)
+        self.packets.setChecked(bool(s.ui.get("packet_matching", True)))
         f.addRow("", self.packets)
         self.gap = QDoubleSpinBox()
         self.gap.setRange(0, 600)

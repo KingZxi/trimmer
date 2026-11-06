@@ -8,8 +8,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+from PySide6.QtCore import QEvent, QObject
 from PySide6.QtGui import QColor, QFont, QPalette
-from PySide6.QtWidgets import QApplication, QStyleFactory
+from PySide6.QtWidgets import QAbstractSpinBox, QApplication, QStyleFactory
 
 from ..core.util import app_data_dir
 
@@ -260,6 +261,19 @@ def apply_theme(app: QApplication, theme: str = "dark"):
     _apply(app, system_scheme() if theme == "system" else theme)
 
 
+class _SpinPadding(QObject):
+    """Spin boxes ignore the stylesheet's padding (their text sat against the left edge), so give
+    each one's text the same inset as the combo boxes as it's first shown."""
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Polish and isinstance(obj, QAbstractSpinBox):
+            obj.lineEdit().setTextMargins(8, 0, 0, 0)
+        return False
+
+
+_spin_padding = _SpinPadding()
+
+
 def _apply(app: QApplication, theme: str):
     t = LIGHT if theme == "light" else DARK
     current.clear()
@@ -278,6 +292,8 @@ def _apply(app: QApplication, theme: str):
         p.setColor(QPalette.Disabled, role, QColor(t["faint"]))
     app.setPalette(p)
     app.setStyleSheet(stylesheet(t))
+    app.removeEventFilter(_spin_padding)
+    app.installEventFilter(_spin_padding)
 
 
 def clear_icon_path() -> str:

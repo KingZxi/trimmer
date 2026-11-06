@@ -20,6 +20,16 @@ First release on GitHub, with a Windows installer and a portable zip.
   options can be resized by dragging, the Clips preview and options can be resized too, the kept
   parts list only takes the room it needs, the Video column is shorter ("1080p60 h264"; the full
   details are in its tooltip), and status messages clear when you switch tabs.
+- New: a "↺" button at the end of every Settings row that isn't on its default puts just that
+  setting back (nothing is saved until Save), and "↺ Restore default" does the same for the
+  custom compression settings.
+- New: an "Auto 3 (H.265, quality 93)" compression preset: measured auto quality at the balanced
+  target, keeping the original if compressing would make it bigger. Existing preset lists get it
+  once; deleting it afterwards sticks.
+- Fixed: number boxes (such as "Keyframe every") had their text against the left edge, unlike
+  the other boxes, and their labels touched them.
+- Fixed: Settings > Replay merge "Match clips frame by frame" always showed as ticked, even when
+  it had been turned off.
 - Changed: the Settings pages scroll, so the dialog and its Save button fit on smaller screens.
 - Fixed: "Original" audio rips of FLAC tracks (common in MKV recordings) failed their check,
   because the copied file still claimed the whole source's length.

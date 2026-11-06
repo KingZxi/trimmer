@@ -456,6 +456,7 @@ class EncodeForm(QWidget):
         super().__init__(parent)
         f = QFormLayout(self)
         f.setContentsMargins(0, 0, 0, 0)
+        f.setHorizontalSpacing(14)          # labels like "Keyframe every" don't touch their box
         self.mode = QComboBox()
         for label, key in MODES:
             self.mode.addItem(label, key)

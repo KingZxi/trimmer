@@ -11,9 +11,14 @@ SETTINGS_FILE = "settings.json"
 OLD_MERGE_SETTINGS = Path.home() / ".obs_merge_settings.json"
 
 
+AUTO3_PRESET = "Auto 3 (H.265, quality 93)"
+
+
 def default_presets():
     return {
         "Archive (H.265, auto CRF)": EncodeSettings(codec="h265", quality="auto2", preset="slow").to_dict(),
+        AUTO3_PRESET: EncodeSettings(codec="h265", quality="auto3", auto3_target=93.0, preset="medium",
+                                     revert_if_larger=True).to_dict(),
         "Balanced (H.265 CRF 23)": EncodeSettings(codec="h265", quality=23, preset="medium").to_dict(),
         "Compatible (H.264 CRF 20)": EncodeSettings(codec="h264", quality=20, preset="medium").to_dict(),
         "Discord 10 MB (720p)": EncodeSettings(mode="target_size", codec="h264", target_size_mb=9.5,
@@ -112,6 +117,11 @@ class AppSettings:
             if s.extra_trim_padding == 0:
                 s.extra_trim_padding = 3.75
             s.ui["padding_default_375"] = True
+        # One-time: the Auto 3 preset joins existing preset lists (deleting it afterwards sticks).
+        if isinstance(data, dict) and not s.ui.get("preset_auto3_added"):
+            if AUTO3_PRESET not in s.presets:
+                s.presets = {**s.presets, AUTO3_PRESET: default_presets()[AUTO3_PRESET]}
+            s.ui["preset_auto3_added"] = True
         s.encode = EncodeSettings.from_dict(s.encode).to_dict()
         if s.conflict_policy not in ("ask", "rename", "overwrite", "skip"):
             s.conflict_policy = "ask"

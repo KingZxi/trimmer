@@ -261,3 +261,35 @@ def test_old_logs_are_deleted_and_can_be_cleared(monkeypatch):
     back = AppSettings.load()
     assert not back.auto_delete_logs and back.keep_logs_days == 90
     other.unlink()
+
+
+def test_settings_rows_off_their_default_get_a_restore_button():
+    from trimmer.gui.settings_dialog import SettingsDialog
+    s = AppSettings()
+    s.conflict_policy, s.max_gap, s.keep_logs_days = "rename", 3.0, 60
+    d = SettingsDialog(s, ["software"])
+    shown = sorted(k for k, b in d.resets.items() if not b.isHidden())
+    assert shown == ["auto_logs", "conflict", "gap", "keep_logs"]     # the logs row holds both controls
+    d.resets["gap"].click()
+    assert d.gap.value() == 1.5 and d.resets["gap"].isHidden()
+    d.tags.setChecked(False)                                           # changing a row shows its button
+    assert not d.resets["tags"].isHidden()
+    assert d.b_enc_default.isHidden()
+    d.enc.crf.setValue(30)
+    assert not d.b_enc_default.isHidden()
+    d.b_enc_default.click()
+    assert d.enc.settings().quality == 23 and d.b_enc_default.isHidden()
+
+
+def test_auto3_preset_is_added_once(tmp_path, monkeypatch):
+    import json
+    from trimmer.core import settings as st
+    monkeypatch.setattr(st.AppSettings, "path", classmethod(lambda cls: tmp_path / "settings.json"))
+    (tmp_path / "settings.json").write_text(json.dumps({"presets": {"Mine": {"codec": "h264"}}}))
+    s = AppSettings.load()
+    assert list(s.presets) == ["Mine", st.AUTO3_PRESET]
+    auto3 = s.presets[st.AUTO3_PRESET]
+    assert auto3["quality"] == "auto3" and auto3["auto3_target"] == 93.0 and auto3["revert_if_larger"]
+    del s.presets[st.AUTO3_PRESET]
+    s.save()
+    assert st.AUTO3_PRESET not in AppSettings.load().presets          # deleting it sticks
