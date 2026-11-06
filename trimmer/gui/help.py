@@ -83,6 +83,7 @@ SHORTCUTS = """
 <h3>Replay merge tab</h3>
 <table cellpadding="4">
 <tr><td><b>F2</b></td><td>Name the selected session's output</td></tr>
+<tr><td><b>Delete</b></td><td>Remove the selected replays from the list</td></tr>
 <tr><td><b>Shift+Delete</b></td><td>Move the selected replays to the Recycle Bin</td></tr>
 <tr><td><b>Shift-click a tick</b></td><td>Tick or untick every session</td></tr>
 <tr><td><b>Esc</b> (in the list)</td><td>Deselect, back to the options for all sessions</td></tr>

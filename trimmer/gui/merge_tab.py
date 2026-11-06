@@ -207,11 +207,8 @@ class MergeTab(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(10)
-        b_clear = set_kind(QPushButton("Clear"), "ghost")
-        b_clear.clicked.connect(self.clear)
-        lay.addWidget(hbox(label("Overlapping replays are grouped into sessions. Each becomes one video, "
-                                 "or separate clips without the repeats.", "muted"),
-                           "stretch", b_clear, stretch_end=False))
+        lay.addWidget(label("Overlapping replays are grouped into sessions. Each becomes one video, "
+                            "or separate clips without the repeats.", "muted"))
 
         self.watch_box = QCheckBox("Watch folder")
         self.watch_box.setToolTip("Add new replays from this folder automatically as OBS saves them")
@@ -220,11 +217,7 @@ class MergeTab(QWidget):
         b_watch = set_kind(QPushButton("Choose…"), "ghost")
         b_watch.clicked.connect(lambda: self._choose_watch_folder())
         self.watch_hint = label("", "muted")
-        b_desel = set_kind(QPushButton("Deselect all"), "ghost")
-        b_desel.setToolTip("Back to the options for all sessions  (Esc in the list)")
-        b_desel.clicked.connect(lambda: self.deselect_all())
-        lay.addWidget(hbox(self.watch_box, self.watch_path, b_watch, self.watch_hint, "stretch", b_desel,
-                           stretch_end=False))
+        lay.addWidget(hbox(self.watch_box, self.watch_path, b_watch, self.watch_hint))
 
         split = QSplitter(Qt.Vertical)
         self.tree = HintTree()
@@ -246,11 +239,28 @@ class MergeTab(QWidget):
         self.tree.itemDelegate().closeEditor.connect(lambda *_: self._refresh_default_names())
         sc = QShortcut(QKeySequence("F2"), self.tree)
         sc.activated.connect(lambda: self._edit_name(self.tree.currentItem()))
+        sc = QShortcut(QKeySequence("Delete"), self.tree)
+        sc.activated.connect(lambda: self.remove_selected())
         sc = QShortcut(QKeySequence("Shift+Delete"), self.tree)
         sc.activated.connect(lambda: self.delete_selected())
         self.tree.header().setHighlightSections(False)
         self.tree.itemSelectionChanged.connect(self._sel)
-        split.addWidget(self.tree)
+        b_desel = set_kind(QPushButton("Deselect all"), "ghost")
+        b_desel.setToolTip("Back to the options for all sessions  (Esc in the list)")
+        b_desel.clicked.connect(lambda: self.deselect_all())
+        b_rm = set_kind(QPushButton("Remove"), "ghost")
+        b_rm.setToolTip("Take the selected clips out of the list. The files stay where they are  (Delete)")
+        b_rm.clicked.connect(lambda: self.remove_selected())
+        b_clear = set_kind(QPushButton("Clear"), "ghost")
+        b_clear.setToolTip("Empty the list. The files stay where they are")
+        b_clear.clicked.connect(self.clear)
+        list_pane = QWidget()
+        ll = QVBoxLayout(list_pane)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(6)
+        ll.addWidget(self.tree, 1)
+        ll.addWidget(hbox(b_desel, b_rm, b_clear))      # under the list, from its left edge, as in Clips
+        split.addWidget(list_pane)
         vc, vcl = card(margins=(12, 10, 12, 8), spacing=4)
         self.b_preview = set_kind(QPushButton("Preview merged session"), "ghost")
         self.b_preview.setToolTip("Builds a temporary merged video of the selected session and plays it. "
@@ -984,6 +994,7 @@ class MergeTab(QWidget):
                         lambda: self.merge_then_send())
         m.addSeparator()
         what = f"{len(clips)} clip{'s' if len(clips) != 1 else ''}"
+        m.addAction(f"Remove {what} from the list\tDel", lambda: self.remove_selected())
         m.addAction((f"Delete {what} permanently…" if self.main.settings.permanent_delete
                      else f"Move {what} to the Recycle Bin…") + "\tShift+Del", lambda: self.delete_selected())
         m.exec(self.tree.viewport().mapToGlobal(pos))
@@ -1007,6 +1018,17 @@ class MergeTab(QWidget):
         paths = [c.path for c in clips]
         self._take(paths)
         self.main.send_to_clips(paths)
+
+    def remove_selected(self, clips=None):
+        """Take clips (default: the selection) out of Replay merge. The files are left alone."""
+        if clips is None:
+            clips = self._selection()[0]
+        if not clips:
+            return
+        doomed = {str(c.path) for c in clips}
+        for d in [d for d in self.viewers if str(d.clip.path) in doomed]:
+            d.close()
+        self._take([c.path for c in clips])
 
     def release(self, paths):
         """Close the viewers of files that are about to be deleted."""

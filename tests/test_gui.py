@@ -804,7 +804,7 @@ def test_merge_per_session_options():
     assert not tree.selectedItems() and tree.currentItem() is None
     _select_rows(tree, [0])
     w.resize(1280, 1100)                          # room below the rows, however small the screen is
-    tree.parentWidget().setSizes([300, 170])
+    m.split.setSizes([300, 170])
     pump(0.3)
     vp, below = tree.viewport(), tree.visualItemRect(second).bottom() + 8
     assert below < vp.height()
@@ -1541,4 +1541,21 @@ def test_help_menu_and_tidier_layout(monkeypatch):
     w.show_status("Found 2 session(s)")
     w.tabs.setCurrentWidget(w.queue)
     assert w.statusBar().currentMessage() == ""
+    # Replay merge: the list's buttons sit under it, and Remove takes clips out without touching files
+    m = w.merge
+    texts = [b.text() for b in m.findChildren(QPushButton)]
+    assert {"Deselect all", "Remove", "Clear"} <= set(texts)
+    rep = WORK / "help_rep"
+    paths = fx.shared_replays(rep)
+    m.add_paths(paths)
+    pump(30, lambda: m.sessions)
+    n = len(m.paths)
+    _select_rows(m.tree, [(0, 0)])
+    m.remove_selected()
+    pump(30, lambda: len(m.paths) == n - 1 and m.sessions)
+    assert all(Path(p).exists() for p in paths)
+    m.tree.selectAll()
+    m.remove_selected()
+    pump(30, lambda: not m.paths)
+    assert not m.sessions and m.tree.topLevelItemCount() == 0
     w.close()

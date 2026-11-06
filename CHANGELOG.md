@@ -20,6 +20,8 @@ First release on GitHub, with a Windows installer and a portable zip.
   options can be resized by dragging, the Clips preview and options can be resized too, the kept
   parts list only takes the room it needs, the Video column is shorter ("1080p60 h264"; the full
   details are in its tooltip), and status messages clear when you switch tabs.
+- New: Replay merge has Deselect all, Remove and Clear under its session list, like Clips, and
+  "Remove from the list" (Delete) in its right-click menu. The files stay where they are.
 - New: a "↺" button at the end of every Settings row that isn't on its default puts just that
   setting back (nothing is saved until Save), and "↺ Restore default" does the same for the
   custom compression settings.
