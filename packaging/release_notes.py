@@ -1,5 +1,6 @@
-"""Prints the GitHub Release text for the current version: its CHANGELOG.md
-section plus download notes. Used by .github/workflows/release.yml."""
+"""Writes the GitHub Release text for the current version (its CHANGELOG.md
+section plus download notes) to the file given, as UTF-8, or prints it.
+Used by .github/workflows/release.yml."""
 
 import re
 import sys
@@ -14,7 +15,7 @@ match = re.search(rf"^## {re.escape(__version__)}\b.*?$\n(.*?)(?=^## |\Z)", log,
 if not match:
     sys.exit(f"CHANGELOG.md has no section for {__version__}")
 
-print(f"""{match.group(1).strip()}
+text = (f"""{match.group(1).strip()}
 
 ## Download
 
@@ -27,3 +28,9 @@ The download isn't code-signed yet, so Windows SmartScreen may say "Windows prot
 your PC". Click **More info**, then **Run anyway**. With Smart App Control turned on,
 Windows blocks unsigned apps completely; run Trimmer from source instead (see the README).
 `SHA256SUMS.txt` lists the checksums of the files.""")
+if len(sys.argv) > 1:
+    # A file, not the console: Windows consoles and redirects aren't UTF-8 (the changelog has ↺, …).
+    Path(sys.argv[1]).write_text(text + "\n", encoding="utf-8")
+else:
+    sys.stdout.reconfigure(encoding="utf-8")
+    print(text)

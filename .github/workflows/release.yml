@@ -53,7 +53,7 @@ jobs:
           $files | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_ -Algorithm SHA256).Hash.ToLower(), $_.Name } |
             Set-Content dist\SHA256SUMS.txt -Encoding ascii
           Get-Content dist\SHA256SUMS.txt
-          python packaging\release_notes.py > dist\release-notes.md
+          python packaging\release_notes.py dist\release-notes.md
 
       - uses: actions/upload-artifact@v4
         with:
