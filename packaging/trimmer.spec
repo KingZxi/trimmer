@@ -23,10 +23,11 @@ a = Analysis(
     datas=[
         (str(ROOT / "trimmer" / "gui" / "assets"), "trimmer/gui/assets"),
     ] + licences,
-    # Qt parts Trimmer never uses, left out to keep the download small.
+    # Qt parts Trimmer never uses, left out to keep the download small. (Not QtNetwork:
+    # QtMultimedia imports it, and without it the preview has no sound.)
     excludes=["tkinter", "pytest", "tests", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
               "PySide6.QtQml", "PySide6.QtQuick", "PySide6.Qt3DCore", "PySide6.QtCharts",
-              "PySide6.QtDataVisualization", "PySide6.QtPdf", "PySide6.QtNetwork"],
+              "PySide6.QtDataVisualization", "PySide6.QtPdf"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

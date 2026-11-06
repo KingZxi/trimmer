@@ -23,6 +23,8 @@ First release on GitHub, with a Windows installer and a portable zip.
 - New: when Windows stops Qt's video player from loading, the preview bar says "No sound" (hover for
   why) and Logs\playback.txt has the details, instead of quietly showing a slower, silent preview.
   The release build now checks that playback loads before it's published.
+- Fixed: the Windows build's preview had no sound and was slow, because a part of Qt the video
+  player needs had been left out of the build.
 - New: Replay merge has Deselect all, Remove and Clear right above its session list, and
   "Remove from the list" (Delete) in its right-click menu. The files stay where they are.
 - New: a "↺" button at the end of every Settings row that isn't on its default puts just that
