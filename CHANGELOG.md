@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.0 (2026-11-04)
+## 1.2.0 (2026-11-06)
 
 First release on GitHub, with a Windows installer and a portable zip.
 
