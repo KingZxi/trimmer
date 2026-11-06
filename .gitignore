@@ -14,3 +14,6 @@ build/
 dist/
 .build-venv/
 packaging/version_info.txt
+
+# Private notes, kept out of the repo
+IDEAS.md
