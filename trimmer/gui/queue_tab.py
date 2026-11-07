@@ -3,7 +3,6 @@ re-pointed to another folder, given other compression, or reordered;
 the running job can be paused and resumed in place."""
 
 import os
-import re
 import subprocess
 import sys
 from dataclasses import replace
@@ -18,7 +17,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDia
 from ..core import ffmpeg as ff
 from ..core import jobs as J
 from ..core import savings
-from ..core.encode import CODECS, EncodeSettings
+from ..core.describe import compression_line, default_name, describe, gap_note
+from ..core.encode import EncodeSettings
 from ..core.estimate import prepare_job
 from ..core.journal import save_queue
 from ..core.util import format_hms, format_size, logs_dir, sanitize_filename
@@ -35,125 +35,6 @@ WHEN_DONE = [("Do nothing", "nothing"), ("Open the output folder", "open"), ("Pu
 
 
 # ------------------------------------------------------------------ helpers
-def gap_note(result, short=False) -> str:
-    """The source problems a finished job reported (frame gaps it kept), in one line."""
-    w = getattr(result, "warnings", None) or []
-    if not w:
-        return ""
-    first = w[0].split(" (", 1)[0] if short else w[0]
-    if short:
-        first = "source gap " + re.sub(r" with .*? at ", " at ", first.split(": ", 1)[1])
-    return first + (f" (+{len(w) - 1} more)" if len(w) > 1 else "")
-
-
-def describe(job) -> str:
-    """One-line summary of what a job will do."""
-    bits = []
-    if isinstance(job, J.MergeJob):
-        bits.append(f"Merge {len(job.clip_paths)} clips" if job.options.merge_mode != "trim"
-                    else f"Remove repeats from {len(job.clip_paths)} clips")
-    else:
-        if job.segments:
-            n = len(job.segments)
-            bits.append(f"Trim {n} part{'s' if n > 1 else ''}")
-        if not job.make_video:
-            bits.append("No video")
-        elif job.audio_tracks == []:
-            bits.append("No audio")
-        elif job.audio_tracks:
-            bits.append("Tracks " + ",".join(str(t + 1) for t in job.audio_tracks))
-    if job.mix_tracks:
-        bits.append("Mixed audio")
-    if job.compress and (isinstance(job, J.MergeJob) or job.make_video):
-        e = EncodeSettings.from_dict(job.encode)
-        auto = e.is_autoset
-        e = e.applied()
-        codec = {"h264": "H.264", "h265": "H.265", "av1": "AV1"}.get(e.codec, CODECS.get(e.codec, e.codec))
-        if e.uses_ten_bit:
-            codec += " 10-bit"
-        hw = "" if e.encoder == "software" else " " + e.encoder.upper()
-        if e.mode == "lossless":
-            q = "lossless"
-        elif e.mode == "target_size":
-            q = f"{e.target_size_mb:g} MB"
-        else:
-            q = str(e.quality) if e.is_auto else f"{'CQ' if hw else 'CRF'}{e.quality}"
-            if e.quality == "auto3" and e.auto3_target != 93.0:
-                q += f" (target {e.auto3_target:g})"
-        cap = f" {e.max_height}p" if e.max_height else ""
-        if e.is_autoset:            # not chosen yet
-            bits.append(f"Auto settings (give up {e.give_up}){' 10-bit' if e.ten_bit else ''}{hw}{cap}")
-        else:
-            bits.append(f"{codec}{hw} {q}{' (auto settings)' if auto else ''}{cap}")
-    elif isinstance(job, J.MergeJob):
-        bits.append({"exact": "Frame-exact re-encode", "lossless": "Lossless only"}.get(
-            job.options.merge_method, "Lossless when possible"))
-    elif job.make_video:
-        bits.append(("Smart cut" if job.options.smart_cut else "Frame-exact re-encode")
-                    if job.segments and job.options.exact_cuts else "No re-encode")
-    if isinstance(job, J.ClipJob) and job.rip_audio_tracks:
-        bits.append(f"Rip {len(job.rip_audio_tracks)} track{'s' if len(job.rip_audio_tracks) > 1 else ''}"
-                    f" ({job.options.rip_format})")
-    if isinstance(job, J.ClipJob) and job.rip_video:
-        bits.append("Rip video")
-    return "  ·  ".join(bits)
-
-
-def compression_line(job) -> str:
-    """First line of the details panel: the compression a job will use, in full."""
-    if not (job.compress and job.encode and (isinstance(job, J.MergeJob) or job.make_video)):
-        if isinstance(job, J.ClipJob) and not job.make_video:
-            how = "no video saved"
-        elif isinstance(job, J.MergeJob):
-            how = {"exact": "frame-exact re-encode", "lossless": "lossless only"}.get(
-                job.options.merge_method, "lossless when possible")
-        else:
-            how = (("smart cut" if job.options.smart_cut else "frame-exact re-encode")
-                   if job.segments and job.options.exact_cuts else "no re-encode")
-        return f"Compression: none ({how})"
-    e = EncodeSettings.from_dict(job.encode)
-    a = e.applied()
-    hw = a.encoder != "software" and a.mode != "lossless"
-    bits = []
-    if e.is_autoset and not e.chosen:
-        bits.append(f"Auto settings, measured (give up {e.give_up}): choosing codec and CRF…")
-        bits.append("hardware " + a.encoder.upper() if a.encoder != "software" else "software")
-    else:
-        codec = {"h264": "H.264", "h265": "H.265", "av1": "AV1"}.get(
-            a.codec, CODECS.get(a.codec, a.codec))
-        bits.append(f"{codec}{' 10-bit' if a.uses_ten_bit else ''} ({a.encoder_name})")
-        if a.mode == "lossless":
-            bits.append("lossless")
-        elif a.mode == "target_size":
-            bits.append(f"target size {a.target_size_mb:g} MB")
-        elif a.is_auto:
-            bits.append("Auto 2" if a.quality == "auto2" else f"Auto 3 (target {a.auto3_target:g})")
-        else:
-            bits.append(f"{'CQ' if hw else 'CRF'} {a.quality}")
-        if e.is_autoset:
-            bits[-1] += f" (chosen by auto settings, give up {e.give_up})"
-    bits.append(f"preset {a.preset}")
-    bits.append("audio copied" if a.audio == "copy" else f"audio {a.audio} kbps")
-    if a.max_height:
-        bits.append(f"max {a.max_height}p")
-    if a.max_fps:
-        bits.append(f"max {a.max_fps:g} fps")
-    if a.keyframe_interval:
-        bits.append(f"keyframe every {a.keyframe_interval:g} s")
-    if a.revert_if_larger:
-        bits.append("keep original if larger")
-    return "Compression: " + ", ".join(bits)
-
-
-def default_name(job, settings) -> str:
-    if isinstance(job, J.MergeJob):
-        t = job.title_text
-        if t.startswith("Session ") and job.options.merge_mode != "trim":
-            return "Merged " + t[len("Session "):]
-        return t.replace("Session ", "", 1) if t.startswith("Session ") else t
-    return Path(job.source).stem + settings.name_suffix
-
-
 def sleep_pc():
     if sys.platform == "win32":
         import ctypes
@@ -406,54 +287,69 @@ class QueueTab(QWidget):
         self._cell(r, C_DEST, shown, full + ("\nDouble-click to change" if item.status == "queued" else ""),
                    muted=not job.options.output_dir and item.result is None)
         self._cell(r, C_SET, describe(job))
+        self._cell(r, C_STATUS, self._status_text(item))
+        self._cell(r, C_DETAIL, *self._detail_text(item))
+        self._cell(r, C_SIZE, self._size_text(item))
+        self.table.setItem(r, C_DEL, self._delete_cell(item))
+        self.table.blockSignals(was_blocked)
+        self._show_compression(item)
+        self._show_progress(r, item)
+
+    def _status_text(self, item) -> str:
         status = STATUS_TEXT.get(item.status, item.status)
         if item.status == "running":
-            status = "Paused" if self.paused else (f"{status}: {item.stage}" if item.stage else status)
-        elif item.status == "queued" and not item.ready:
-            status = "Choosing settings" if item is self._estimating else "Waiting to choose settings"
-        elif item.status == "queued" and self.paused and self.is_running():
-            status = "Waiting (paused)"
-        self._cell(r, C_STATUS, status)
-        left = []
+            return "Paused" if self.paused else (f"{status}: {item.stage}" if item.stage else status)
+        if item.status == "queued" and not item.ready:
+            return "Choosing settings" if item is self._estimating else "Waiting to choose settings"
+        if item.status == "queued" and self.paused and self.is_running():
+            return "Waiting (paused)"
+        return status
+
+    def _detail_text(self, item):
+        """(the Details cell, its tooltip): progress while running, why it failed or was skipped,
+        or the gaps a finished job found in its source."""
+        res = item.result
         if item.status == "running":
+            left = []
             if item.fraction is not None:
                 left.append(f"{item.fraction * 100:.0f}%")
             if item.size:
                 left.append(format_size(item.size))
             if item.eta and not self.paused:
                 left.append(format_hms(item.eta) + " left")
-        elif item.status == "queued" and item.analysis:
-            left.append(item.analysis)
-        elif item.result is not None and item.result.messages and item.status in ("failed", "skipped"):
-            left.append(item.result.messages[0].splitlines()[0][:160])
-        elif item.result is not None and item.status in ("done", "reverted") and gap_note(item.result):
-            left.append(gap_note(item.result)[:160])
-        self._cell(r, C_DETAIL, "  ·  ".join(left),
-                   "\n".join(item.result.warnings) if left and item.result is not None
-                   and item.status in ("done", "reverted") and item.result.warnings else None)
-        self._cell(r, C_SIZE, self._size_text(item))
+            return "  ·  ".join(left), None
+        if item.status == "queued" and item.analysis:
+            return item.analysis, None
+        if res is not None and res.messages and item.status in ("failed", "skipped"):
+            return res.messages[0].splitlines()[0][:160], None
+        if res is not None and item.status in ("done", "reverted") and gap_note(res):
+            return gap_note(res)[:160], "\n".join(res.warnings) if res.warnings else None
+        return "", None
+
+    def _delete_cell(self, item) -> QTableWidgetItem:
         d = QTableWidgetItem("")
         flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
         if item.status == "queued":
             flags |= Qt.ItemIsUserCheckable
         d.setFlags(flags)
-        d.setCheckState(Qt.Checked if job.options.delete_originals else Qt.Unchecked)
+        d.setCheckState(Qt.Checked if item.job.options.delete_originals else Qt.Unchecked)
         if item.result is not None and item.result.deleted:
             d.setText(f"{len(item.result.deleted)} removed")
         d.setToolTip("Delete the original(s) once the output is saved and checked"
                      + (" (" + ("permanently" if self.main.settings.permanent_delete else "to the Recycle Bin")
                         + ")"))
-        self.table.setItem(r, C_DEL, d)
-        self.table.blockSignals(was_blocked)
-        self._show_compression(item)
+        return d
+
+    def _show_progress(self, r: int, item):
         bar = self.table.cellWidget(r, C_BAR)
-        if bar:
-            if item.status == "running" and item.fraction is None:
-                bar.setRange(0, 0 if not self.paused else 1000)
-            else:
-                bar.setRange(0, 1000)
-                bar.setValue(int((item.fraction or 0) * 1000) if item.status == "running"
-                             else 1000 if item.status in ("done", "reverted") else 0)
+        if not bar:
+            return
+        if item.status == "running" and item.fraction is None:
+            bar.setRange(0, 0 if not self.paused else 1000)
+        else:
+            bar.setRange(0, 1000)
+            bar.setValue(int((item.fraction or 0) * 1000) if item.status == "running"
+                         else 1000 if item.status in ("done", "reverted") else 0)
 
     def _size_text(self, item):
         rr = item.result
