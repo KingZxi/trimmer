@@ -1,7 +1,6 @@
 """Clips tab: drop clips in, preview, mark trims, choose what to save."""
 
 import hashlib
-from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
@@ -13,7 +12,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
 
 from ..core import ffmpeg as ff
 from ..core import peek
-from ..core.encode import EncodeSettings, pick_settings, predict_size, resolve_quality
+from ..core.encode import EncodeSettings
+from ..core.estimate import estimate_size
 from ..core.jobs import ClipJob, JobOptions
 from ..core.render import AUDIO_RIP_FORMATS
 from ..core.util import format_hms, format_hms_ms, format_size, same_file, sanitize_filename
@@ -1044,35 +1044,33 @@ class ClipsTab(QWidget):
         plans = []
         for e in entries:
             st = self._eff(e)
-            plans.append((e, st["save_video"] and st["compress"], self.encode_settings(st["preset"])))
-        lossless = any(compress and enc.mode == "lossless" for _, compress, enc in plans)
+            plans.append((e, self._kept(e), self.encode_settings(st["preset"]) if st["save_video"] and st["compress"]
+                          else None))
 
         def work():
-            total_in = total_out = 0
-            for e, compress, enc in plans:
-                kept = self._kept(e)
-                part_in = int(e.info.size * kept / e.info.duration) if e.info.duration else e.info.size
+            total_in = total_out = unknown = 0
+            for e, kept, enc in plans:
+                est = estimate_size(e.path, e.info, kept, enc, analyse=True)
+                if est is None:
+                    unknown += 1
+                    continue
                 total_in += e.info.size
-                if not compress:
-                    total_out += part_in
-                elif enc.mode == "target_size":
-                    total_out += int(enc.target_size_mb * 1024 * 1024)
-                elif enc.mode == "lossless":
-                    total_out += int(part_in * 2)      # rough: lossless is usually larger than OBS output
-                else:
-                    if enc.needs_analysis:     # remembered, so the queue doesn't analyse it again
-                        enc = replace(enc, chosen=pick_settings(e.path, e.info, enc))
-                    enc = enc.applied()
-                    q, _ = resolve_quality(e.path, e.info, enc)
-                    total_out += predict_size(e.path, e.info, enc, q, kept)
-            return total_in, total_out
+                total_out += est
+            return total_in, total_out, unknown
+
+        def show(r):
+            total_in, total_out, unknown = r
+            text = (f"About {format_size(total_out)} from {format_size(total_in)} of originals"
+                    + (f" (saves about {format_size(total_in - total_out)})" if total_in > total_out else ""))
+            if unknown:
+                lossless = ("1 lossless clip not counted: its size can't be told in advance" if unknown == 1 else
+                            f"{unknown} lossless clips not counted: their sizes can't be told in advance")
+                text = lossless if unknown == len(plans) else f"{text}. {lossless}"
+            self.estimate_label.setText(text + ".")
 
         self.estimate_label.setText("Estimating…")
         t = Task(work, parent=self)
-        t.done.connect(lambda r: self.estimate_label.setText(
-            f"About {format_size(r[1])} from {format_size(r[0])} of originals"
-            + (f" (saves about {format_size(r[0] - r[1])})" if r[0] > r[1] else "")
-            + (". Lossless is a rough guess." if lossless else ".")))
+        t.done.connect(show)
         t.failed.connect(lambda m: self.estimate_label.setText(f"Couldn't estimate: {m}"))
         self.tasks.append(t)
         t.start()

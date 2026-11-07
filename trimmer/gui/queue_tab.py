@@ -18,7 +18,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDia
 from ..core import ffmpeg as ff
 from ..core import jobs as J
 from ..core import savings
-from ..core.encode import CODECS, EncodeSettings, predict_size, resolve_quality
+from ..core.encode import CODECS, EncodeSettings
+from ..core.estimate import prepare_job
 from ..core.journal import save_queue
 from ..core.util import format_hms, format_size, logs_dir, sanitize_filename
 from .clips_tab import CustomEncodeDialog
@@ -151,55 +152,6 @@ def default_name(job, settings) -> str:
             return "Merged " + t[len("Session "):]
         return t.replace("Session ", "", 1) if t.startswith("Session ") else t
     return Path(job.source).stem + settings.name_suffix
-
-
-def prepare_job(job, cancel=None, on_step=None):
-    """(predicted output bytes or None, input bytes, chosen auto settings or
-    None). Auto settings are analysed first (minutes, not seconds), then the
-    size is predicted for what they chose."""
-    chosen = None
-    if J.needs_analysis(job):
-        chosen = J.analyse_job(job, cancel, on_step=on_step)
-        job = replace(job, encode={**job.encode, "chosen": chosen})
-    est, in_bytes = estimate_job(job)
-    return est, in_bytes, chosen
-
-
-def estimate_job(job):
-    """(predicted output bytes or None, input bytes). Quick: auto3 is
-    estimated with the auto2 analysis so this never runs VMAF."""
-    if isinstance(job, J.MergeJob):
-        total = 0
-        for p in job.clip_paths:
-            try:
-                total += ff.probe(p).size
-            except Exception:
-                pass
-        return None, total or None
-    src = Path(job.source)
-    info = ff.probe(src)
-    if not job.make_video:
-        return None, info.size
-    dur = info.duration or 0
-    kept = dur
-    if job.segments:
-        kept = sum(((dur if e is None else e) - s) for s, e in job.segments)
-    plain = int(info.size * kept / dur) if dur else info.size
-    if not job.compress:
-        return plain, info.size
-    enc = EncodeSettings.from_dict(job.encode).applied()
-    if enc.is_autoset:
-        return None, info.size              # not analysed yet
-    if enc.mode == "target_size":
-        return int(enc.target_size_mb * 1024 * 1024), info.size
-    if enc.mode == "lossless":
-        return None, info.size
-    probe_enc = replace(enc, quality="auto2") if enc.quality == "auto3" else enc
-    q, _ = resolve_quality(src, info, probe_enc)
-    est = predict_size(src, info, enc, q, kept)
-    if enc.revert_if_larger and est > plain:
-        est = plain
-    return est, info.size
 
 
 def sleep_pc():
