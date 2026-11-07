@@ -16,7 +16,7 @@ try:
     HAVE_PLAYBACK = True
 except (ImportError, OSError) as e:
     from .fallback_player import FramePlayer as QMediaPlayer
-    from .fallback_player import FrameView as QVideoWidget
+    from .fallback_player import FrameView as QVideoWidget  # noqa: F401  (re-exported)
     QAudioOutput = None
     HAVE_PLAYBACK = False
     PLAYBACK_ERROR = "".join(traceback.format_exception_only(type(e), e)).strip()
