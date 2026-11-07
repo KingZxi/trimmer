@@ -3,7 +3,7 @@ video (or trimmed into one file per replay) by exact packet matching when the re
 their encoded frames (merge_packets), else by the audio and timestamp estimate (merge_fallback)."""
 
 import tempfile
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import List, Optional
 
@@ -18,7 +18,7 @@ from ..util import sanitize_filename
 from .clip_job import _write_rip, run_clip_job
 from .merge_fallback import _fallback_session
 from .merge_packets import _packet_session
-from .model import VIDEO_ONLY, ClipJob, JobContext, JobOptions, JobResult, MergeJob, _Skip
+from .model import VIDEO_ONLY, ClipJob, JobContext, JobResult, MergeJob, _Skip
 from .output import _check_space, _claim, _delete_sources, _keep_note, _out_dir, _save, _write_text
 
 
@@ -93,7 +93,7 @@ def _run_session(job: MergeJob, ctx: JobContext, session: mg.SessionPlan, out_ro
     merged_name, folder_name = session_names(session)
     if custom_name:             # the user's name is used as-is, without the suffix setting
         merged_name = folder_name = sanitize_filename(custom_name)
-        opts = JobOptions(**{**asdict(opts), "name_suffix": ""})
+        opts = replace(opts, name_suffix="")
         job = replace(job, options=opts)
 
     if len(session.clips) == 1:
@@ -104,8 +104,7 @@ def _run_session(job: MergeJob, ctx: JobContext, session: mg.SessionPlan, out_ro
                      keep_mixed_originals=job.keep_mixed_originals, make_video=job.make_video,
                      rip_audio_tracks=job.rip_audio_tracks, rip_video=job.rip_video,
                      output_name=custom_name if opts.merge_mode != "trim" else "",
-                     options=JobOptions(**{**asdict(opts), "delete_originals": False,
-                                           "add_operation_tags": False}))
+                     options=replace(opts, delete_originals=False, add_operation_tags=False))
         if opts.merge_mode == "trim":
             d = out_root / folder_name
             d.mkdir(parents=True, exist_ok=True)
@@ -195,8 +194,7 @@ def _rip_session(job: MergeJob, ctx: JobContext, session: mg.SessionPlan, out_ro
         ctx.stage("Preparing the tracks to rip")
         plain = replace(job, compress=False, audio_tracks=None, mix_tracks=None, make_video=True,
                         rip_audio_tracks=[], rip_video=False,
-                        options=JobOptions(**{**asdict(opts), "generate_clip_log": want_log,
-                                              "delete_originals": False}))
+                        options=replace(opts, generate_clip_log=want_log, delete_originals=False))
         made = _build_session(plain, ctx, session, Path(td), merged_name, folder_name)
         dest.mkdir(parents=True, exist_ok=True)
         for p in made:

@@ -8,7 +8,7 @@ from typing import List, Optional
 from .. import ffmpeg as ff
 from ..encode import EncodeSettings, can_copy_audio, resolve_quality
 from ..ffmpeg import FFmpegError
-from ..render import (AudioPlan, Span, output_ext, render, rip_audio, rip_extension, snap_spans_to_keyframes,
+from ..render import (EPS, AudioPlan, Span, output_ext, render, rip_audio, rip_extension, snap_spans_to_keyframes,
                       verify_output)
 from ..smartcut import SmartCutError, smart_render
 from ..tag import build_tag, describe_encode
@@ -72,7 +72,7 @@ def _spans(job: ClipJob, info) -> List[Span]:
     out = []
     for s, e in job.segments:
         s = max(0.0, float(s))
-        e = None if e is None or e >= info.duration - 0.0005 else float(e)
+        e = None if e is None or e >= info.duration - EPS else float(e)
         if e is not None and e <= s + 0.05:
             continue
         out.append(Span(src, info, s, e))
@@ -206,7 +206,7 @@ def _write_copy(job: ClipJob, ctx, info, spans: List[Span], final: Path, audio: 
                 tag: str = "") -> Path:
     """Stream copy of spans already snapped to keyframes (see _snap)."""
     src = Path(job.source)
-    whole = len(spans) == 1 and spans[0].start <= 0.0005 and spans[0].end is None
+    whole = len(spans) == 1 and not spans[0].cuts_start and spans[0].end is None
 
     def write(part):
         if whole and audio.tracks is None and not audio.needs_filter and not tag \
@@ -236,8 +236,7 @@ def _write_rip(ctx: JobContext, opts: JobOptions, spans: List[Span], t: int, nam
         fmt = "flac"     # joining several parts needs a re-encode; keep it lossless
     final = _claim(out_dir / f"{name}{rip_extension(spans[0].info.audio[t], fmt)}", ctx, opts, sources)
     ctx.stage(f"Ripping audio track {t + 1}")
-    ops = (["trimmed"] if any(s.start > 0.0005 or (s.end is not None and s.end < s.info.duration - 0.0005)
-                              for s in spans) else []) + ["audio rip"]
+    ops = (["trimmed"] if any(s.cuts_start or s.cuts_end for s in spans) else []) + ["audio rip"]
     tag = build_tag(spans[0].info.trimmer_tag, ops)
 
     def write(part):
@@ -298,7 +297,7 @@ def run_clip_job(job: ClipJob, ctx: JobContext) -> JobResult:
     if job.rip_audio_tracks and job.segments and res.rip_from:
         made = Path(res.rip_from)
         rip_spans = [Span(made, ff.probe(made, use_cache=False), 0.0, None)]
-    if job.rip_audio_tracks and any(abs(a.start - b.start) > 0.0005 for a, b in zip(kept_spans, spans)):
+    if job.rip_audio_tracks and any(abs(a.start - b.start) > EPS for a, b in zip(kept_spans, spans)):
         ctx.log("Audio rips start where the video does (on the keyframe), so they line up with it.")
     for t in job.rip_audio_tracks:
         if t >= len(info.audio):

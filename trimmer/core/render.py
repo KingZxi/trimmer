@@ -34,6 +34,9 @@ _COPY_EXT = {"aac": ".m4a", "mp3": ".mp3", "opus": ".opus", "flac": ".flac", "vo
              "alac": ".m4a", "ac3": ".ac3", "eac3": ".eac3"}
 
 
+EPS = 0.0005          # times closer than half a millisecond are the same time
+
+
 @dataclass
 class Span:
     path: Path
@@ -43,6 +46,16 @@ class Span:
 
     def __post_init__(self):
         self.path = Path(self.path).resolve()
+
+    @property
+    def cuts_start(self) -> bool:
+        """It starts after the start of its file."""
+        return self.start > EPS
+
+    @property
+    def cuts_end(self) -> bool:
+        """It stops before the end of its file."""
+        return self.end is not None and self.end < self.info.duration - EPS
 
     @property
     def stop(self) -> float:
@@ -109,9 +122,9 @@ def _ffconcat(spans: List[Span], tmpdir: Path, with_outpoint: bool = True) -> Pa
     for s in spans:
         p = Path(s.path).resolve().as_posix().replace("'", "'\\''")
         lines.append(f"file '{p}'")
-        if s.start > 0.0005:
+        if s.cuts_start:
             lines.append(f"inpoint {s.start:.6f}")
-        if with_outpoint and s.end is not None and s.end < s.info.duration - 0.0005:
+        if with_outpoint and s.cuts_end:
             lines.append(f"outpoint {s.end:.6f}")
     path = tmpdir / "list.ffconcat"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -215,7 +228,7 @@ def snap_spans_to_keyframes(spans: List[Span], never_lose: bool = True) -> List[
     before it (so nothing the user wanted is lost). Mutates spans; returns notes."""
     notes = []
     for s in spans:
-        if s.start <= 0.0005:
+        if not s.cuts_start:
             continue
         kf = ff.keyframe_at_or_before(s.path, s.start)
         if kf is None:
@@ -288,7 +301,7 @@ def _drop_preroll(span: Span) -> List[str]:
     hidden behind an MP4 edit list. Players that ignore the edit list then
     play that audio late by up to a keyframe interval. Dropping everything
     before 0 makes the copied audio start at the cut, like the picture."""
-    return ["-ss", "0", "-copypriorss", "0"] if span.start > 0.0005 else []
+    return ["-ss", "0", "-copypriorss", "0"] if span.cuts_start else []
 
 
 def audio_mix_graph(audio: AudioPlan, selected: List[int], labels: Dict[int, str]):
@@ -342,9 +355,9 @@ def _seek_inputs(spans: List[Span]) -> List[str]:
     """Each span as an input, seeked with -ss/-t (fast, and frame-accurate when re-encoding)."""
     args = []
     for s in spans:
-        if s.start > 0.0005:
+        if s.cuts_start:
             args += ["-ss", f"{s.start:.3f}"]
-        if s.end is not None and s.end < s.info.duration - 0.0005:
+        if s.cuts_end:
             args += ["-t", f"{s.length:.3f}"]
         args += ["-i", str(s.path)]
     return args
@@ -450,10 +463,10 @@ def _render_copy(spans, out_path, audio: AudioPlan, include_video, mixed_label, 
     selected = audio.selected(n_avail)
     video = include_video and first.has_video
     with tempfile.TemporaryDirectory(prefix="trimmer_copy_") as td:
-        if len(spans) == 1 and spans[0].start <= 0.0005:
+        if len(spans) == 1 and not spans[0].cuts_start:
             s = spans[0]
             args = []
-            if s.end is not None and s.end < s.info.duration - 0.0005:
+            if s.cuts_end:
                 args += ["-t", f"{s.length:.6f}"]
             args += ["-i", str(s.path)]
         else:
@@ -470,7 +483,7 @@ def _render_copy(spans, out_path, audio: AudioPlan, include_video, mixed_label, 
                 args = ["-copyts"] + args + ["-f", "concat", "-safe", "0", "-i", str(alist)]
 
         maps = ["-map", "0:v:0"] if video else []
-        a_in = 1 if (len(spans) > 1 or spans[0].start > 0.0005) and selected else 0
+        a_in = 1 if (len(spans) > 1 or spans[0].cuts_start) and selected else 0
         parts, amaps, out_tracks, acodec = copy_audio_maps(first, audio, selected, container, input_index=a_in)
         if parts:
             args += ["-filter_complex", ";".join(parts)]
@@ -558,9 +571,9 @@ def rip_audio(spans: List[Span], track: int, fmt: str, out_base: Path,
     out_path = Path(str(out_base) + ext)
     inputs = []
     for s in spans:
-        if s.start > 0.0005:
+        if s.cuts_start:
             inputs += ["-ss", f"{s.start:.6f}"]
-        if s.end is not None and s.end < s.info.duration - 0.0005:
+        if s.cuts_end:
             inputs += ["-t", f"{s.length:.6f}"]
         inputs += ["-i", str(s.path)]
     if multi:
@@ -580,6 +593,16 @@ def rip_audio(spans: List[Span], track: int, fmt: str, out_base: Path,
         args += ["-movflags", "+faststart"]
     args += ["-y", str(out_path)]
     return ff.run_ffmpeg(args, total, on_progress, cancel, output_path=out_path), out_path
+
+
+class WrongLength(str):
+    """verify_output's answer when an output's length is off: the reason, as for any other problem,
+    and both lengths (`got`, `expected`), so a short output can be told apart."""
+
+    def __new__(cls, got: float, expected: float):
+        self = super().__new__(cls, f"output is {got:.1f}s long but {expected:.1f}s was expected")
+        self.got, self.expected = got, expected
+        return self
 
 
 def length_tolerance(expected: float) -> float:
@@ -606,5 +629,5 @@ def verify_output(path: Path, expected_duration: float, expect_video: bool = Tru
     if n_audio is not None and len(info.audio) != n_audio:
         return f"output has {len(info.audio)} audio track(s), expected {n_audio}"
     if expected_duration > 0 and abs(info.duration - expected_duration) > length_tolerance(expected_duration):
-        return (f"output is {info.duration:.1f}s long but {expected_duration:.1f}s was expected")
+        return WrongLength(info.duration, expected_duration)
     return None

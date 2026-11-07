@@ -3,7 +3,6 @@ checking and renaming (_save), "keep the original if compressing would make it b
 (_keep_smaller), and deleting originals once every output is saved."""
 
 import os
-import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,7 +11,7 @@ from typing import Callable, List, Optional, Tuple
 from .. import ffmpeg as ff
 from ..encode import EncodeSettings, predict_size, quality_label
 from ..ffmpeg import Cancelled, FFmpegError
-from ..render import AudioPlan, verify_output
+from ..render import AudioPlan, WrongLength, verify_output
 from ..tag import build_tag, describe_encode
 from ..util import (format_hms, format_name_time, format_size, recycle_or_delete, safe_unlink, same_file,
                     trim_range_label, unique_path)
@@ -57,9 +56,8 @@ def _reject(ctx, part: Path, final: Path, problem: str, what: str = "Output fail
     """A saved file failed its check: delete it and fail the job (originals are never touched then).
     When it only came out short, the source is usually damaged partway (a recording cut off by a
     crash): the part that could be read is kept, clearly named, so the good footage isn't lost."""
-    m = re.match(r"output is ([0-9.]+)s long but ([0-9.]+)s was expected", problem or "")
-    got = float(m.group(1)) if m else 0.0
-    if m and 10 <= got < float(m.group(2)) and part.exists():
+    got = round(problem.got, 1) if isinstance(problem, WrongLength) else 0.0
+    if got and 10 <= got < problem.expected and part.exists():
         partial = unique_path(final.with_name(f"{final.stem} (partial, first {format_name_time(got)}){final.suffix}"))
         try:
             os.replace(part, partial)
