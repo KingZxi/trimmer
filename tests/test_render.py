@@ -1,8 +1,10 @@
-"""Building blocks of the ffmpeg commands."""
+"""Building blocks of the ffmpeg commands, and the length check every saved file goes through."""
+
+import pytest
 
 from tests import fixtures as fx
 from trimmer.core import ffmpeg as ff
-from trimmer.core.render import AudioPlan, audio_mix_graph, copy_audio_maps
+from trimmer.core.render import AudioPlan, audio_mix_graph, copy_audio_maps, length_tolerance, verify_output
 
 
 def test_a_mix_that_keeps_the_tracks_splits_them_first():
@@ -27,3 +29,16 @@ def test_copied_tracks_are_mapped_straight_from_the_input(work):
     assert maps == ["-map", "[mixed]", "-map", "[k0]", "-map", "[k1]"] and tracks == [None, 0, 1]
     parts, maps, tracks, codec = copy_audio_maps(info, AudioPlan(volumes={1: 2.0}), [0, 1], ".mp4", input_index=1)
     assert parts == ["[1:a:1]volume=2.000[g1]"] and maps == ["-map", "1:a:0", "-map", "[g1]"]
+
+
+def test_the_length_check_allows_a_second_or_two_per_thousand():
+    assert length_tolerance(20) == 1.0
+    assert length_tolerance(600) == pytest.approx(1.2)         # a 10-minute clip: 1.2 s, not 12 s
+    assert length_tolerance(1800) == pytest.approx(3.6)
+
+
+def test_an_output_more_than_a_second_short_fails_the_check(work):
+    src = fx.single_clip(work / "single")
+    length = ff.probe(src, use_cache=False).duration
+    assert verify_output(src, length + 0.8, True, 2) is None
+    assert "was expected" in verify_output(src, length + 1.5, True, 2)

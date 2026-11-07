@@ -582,6 +582,14 @@ def rip_audio(spans: List[Span], track: int, fmt: str, out_base: Path,
     return ff.run_ffmpeg(args, total, on_progress, cancel, output_path=out_path), out_path
 
 
+def length_tolerance(expected: float) -> float:
+    """How far an output's length may be from the expected length and still pass the check: 1 s,
+    or 0.2% past 8 minutes (1.2 s on 10 minutes, 3.6 s on 30). Copied audio can only be cut between
+    packets and containers round lengths a little differently, but footage that goes missing is
+    far more than that. (It used to be 2%: 12 s on a 10-minute clip.)"""
+    return max(1.0, expected * 0.002)
+
+
 def verify_output(path: Path, expected_duration: float, expect_video: bool = True,
                   n_audio: int = None) -> Optional[str]:
     """None if the output looks complete, else a reason. Used before any
@@ -597,7 +605,6 @@ def verify_output(path: Path, expected_duration: float, expect_video: bool = Tru
         return "output has no video stream"
     if n_audio is not None and len(info.audio) != n_audio:
         return f"output has {len(info.audio)} audio track(s), expected {n_audio}"
-    tolerance = max(1.0, expected_duration * 0.02)
-    if expected_duration > 0 and abs(info.duration - expected_duration) > tolerance:
+    if expected_duration > 0 and abs(info.duration - expected_duration) > length_tolerance(expected_duration):
         return (f"output is {info.duration:.1f}s long but {expected_duration:.1f}s was expected")
     return None
