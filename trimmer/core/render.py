@@ -519,6 +519,13 @@ def _render_two_pass(spans, out_path, encode, audio, include_video, mixed_label,
                              output_path=Path(out_path).resolve(), cwd=td)
 
 
+def rip_extension(track, fmt: str) -> str:
+    """The file extension an audio rip of `track` in format `fmt` gets."""
+    if fmt == "copy":
+        return _COPY_EXT.get(track.codec, ".mka")
+    return {"wav": ".wav", "flac": ".flac", "mp3": ".mp3"}.get(fmt, ".m4a")
+
+
 def rip_audio(spans: List[Span], track: int, fmt: str, out_base: Path,
               on_progress=None, cancel: CancelToken = None, tag: str = "") -> (RunResult, Path):
     """Extract one audio track (over the given spans) to its own file.
@@ -528,18 +535,18 @@ def rip_audio(spans: List[Span], track: int, fmt: str, out_base: Path,
     total = sum(s.length for s in spans)
     multi = len(spans) > 1
     if fmt == "copy":
-        ext = _COPY_EXT.get(tr.codec, ".mka")
         # A copied FLAC stream keeps the source's STREAMINFO (its total length), so the .flac
         # would claim the whole source's duration. Encoding FLAC again is lossless and exact.
         codec = ["-c:a", "flac"] if tr.codec == "flac" else ["-c:a", "copy"]
     elif fmt == "wav":
-        ext, codec = ".wav", ["-c:a", "pcm_s16le"]
+        codec = ["-c:a", "pcm_s16le"]
     elif fmt == "flac":
-        ext, codec = ".flac", ["-c:a", "flac"]
+        codec = ["-c:a", "flac"]
     elif fmt == "mp3":
-        ext, codec = ".mp3", ["-c:a", "libmp3lame", "-b:a", "320k"]
+        codec = ["-c:a", "libmp3lame", "-b:a", "320k"]
     else:
-        ext, codec = ".m4a", ["-c:a", "aac", "-b:a", "256k"]
+        codec = ["-c:a", "aac", "-b:a", "256k"]
+    ext = rip_extension(tr, fmt)
     out_path = Path(str(out_base) + ext)
     inputs = []
     for s in spans:

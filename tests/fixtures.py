@@ -217,3 +217,17 @@ def damaged_clip(folder: Path, seconds=20, bad=(8.0, 10.5)) -> Path:
         "-bsf:v", f"noise=amount='if(between(pts*tb,{bad[0]},{bad[1]}),2,0)'", str(p))
     good.unlink()
     return p
+
+
+def cut_off_clip(folder: Path) -> Path:
+    """A recording cut off by a crash: its header still claims all 20 s, but the last quarter
+    of the file is missing, so only about the first 15 s can be read."""
+    p = folder / "Broken clip.mkv"
+    if p.exists():
+        return p
+    full = folder / "full.mkv"
+    run("-i", str(single_clip(folder.parent / "single")), "-c", "copy", str(full))
+    data = full.read_bytes()
+    p.write_bytes(data[: len(data) * 3 // 4])
+    full.unlink()
+    return p

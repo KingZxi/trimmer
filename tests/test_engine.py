@@ -1074,14 +1074,7 @@ def test_copied_audio_rips_keep_track_names_and_length(work, codec):
 def test_damaged_source_keeps_the_part_that_could_be_saved(work):
     """A recording cut off by a crash claims its full length but stops early: the job fails (so the
     original is never deleted) and the footage before the damage is kept as a "(partial ...)" file."""
-    src = fx.single_clip(work / "single")
-    d = fresh(work, "damaged_src")
-    full = d / "full.mkv"
-    ff.run_ffmpeg(["-i", str(src), "-c", "copy", "-y", str(full)], 20, None, None)
-    data = full.read_bytes()
-    broken = d / "Broken clip.mkv"
-    broken.write_bytes(data[: len(data) * 3 // 4])
-    full.unlink()
+    broken = fx.cut_off_clip(fresh(work, "damaged_src"))
     claimed = ff.probe(broken, use_cache=False).duration
     assert claimed > 19, claimed                  # the header still says the whole length
     out = fresh(work, "out_damaged")

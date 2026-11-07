@@ -10,6 +10,7 @@ from tests import fixtures as fx
 from tests.fixtures import ctx, fresh, opts
 from trimmer.core import ffmpeg as ff
 from trimmer.core.encode import EncodeSettings
+from trimmer.core.ffmpeg import Cancelled
 from trimmer.core.jobs import ClipJob, run_job
 
 
@@ -59,3 +60,30 @@ def test_a_real_failed_save_says_why(work, monkeypatch):
     assert r.messages[0].splitlines()[0].startswith("Saving failed: the disk is full")
     assert not list(out.iterdir())          # nothing half-written was left behind
     shutil.rmtree(out, ignore_errors=True)
+
+
+def test_a_cancelled_copy_leaves_nothing_behind(work, monkeypatch):
+    src = fx.single_clip(work / "single")
+    out = fresh(work, "out_cancel_copy")
+    c, logs = ctx()
+    real = shutil.copyfile
+
+    def copy_then_cancel(a, b, *k, **kw):      # Cancel pressed while the file was being copied
+        real(a, b, *k, **kw)
+        c.cancel.cancel()
+    monkeypatch.setattr(shutil, "copyfile", copy_then_cancel)
+    with pytest.raises(Cancelled):
+        run_job(ClipJob(str(src), options=opts(out, add_operation_tags=False)), c)
+    assert not list(out.iterdir()), list(out.iterdir())
+
+
+def test_an_audio_rip_of_a_cut_off_source_keeps_what_could_be_read(work):
+    broken = fx.cut_off_clip(fresh(work, "damaged_rip_src"))
+    out = fresh(work, "out_damaged_rip")
+    c, logs = ctx()
+    r = run_job(ClipJob(str(broken), make_video=False, rip_audio_tracks=[0], options=opts(out, rip_format="copy")), c)
+    assert r.status == "failed" and r.messages[0].startswith("Track 1 failed verification"), (r.messages, logs)
+    assert "damaged" in r.messages[0]
+    [kept] = out.iterdir()
+    assert " - Track 1" in kept.name and "(partial, first " in kept.name, kept.name
+    assert 10 < ff.probe(kept, use_cache=False).duration < 19

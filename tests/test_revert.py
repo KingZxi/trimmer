@@ -7,8 +7,8 @@ the output's name, the job's status, what the log says, and that nothing half-wr
 from tests import fixtures as fx
 from tests.fixtures import ctx, fresh, opts
 from trimmer.core import ffmpeg as ff
-from trimmer.core.encode import EncodeSettings
-from trimmer.core.jobs import NOT_COMPRESSED, ClipJob, MergeJob, run_job
+from trimmer.core.encode import EncodeSettings, quality_label
+from trimmer.core.jobs import NOT_COMPRESSED, ClipJob, JobContext, MergeJob, run_job
 
 # Lossless is far bigger than these H.264 sources, so the encode is stopped part way.
 BIGGER = EncodeSettings(mode="lossless", codec="h264", preset="ultrafast", revert_if_larger=True).to_dict()
@@ -50,6 +50,20 @@ def test_clip_predicted_too_big_is_never_encoded(work):
     assert any(line.startswith("Predicted size") and "skipping the encode" in line for line in logs), logs
     assert not any(line.startswith("Encoding") for line in logs)
     no_parts(out)
+
+
+def test_no_name_clash_question_for_a_compressed_file_that_is_never_written(work):
+    src = fx.single_clip(work / "single")
+    out = fresh(work, "rv_clip_predicted_clash")
+    taken = out / f"Gameplay clip{quality_label(EncodeSettings.from_dict(PREDICTED), 1)}.mp4"
+    taken.write_bytes(b"someone else's file")
+    asked, logs = [], []
+    c = JobContext(log=logs.append, resolve_conflict=lambda p: asked.append(p.name) or "rename")
+    r = run_job(ClipJob(str(src), compress=True, encode=PREDICTED, options=opts(out, conflict_policy="ask")), c)
+    assert r.status == "reverted", logs
+    assert asked == [], asked
+    assert taken.read_bytes() == b"someone else's file"
+    assert (out / f"Gameplay clip{NOT_COMPRESSED}.mp4").exists()
 
 
 def test_trimmed_clip_falls_back_to_a_keyframe_copy_of_the_kept_part(work):
