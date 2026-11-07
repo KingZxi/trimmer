@@ -10,11 +10,15 @@ First release on GitHub, with a Windows installer and a portable zip.
 - New: Settings > Replay merge > "Show the Replay merge tab" hides the tab for anyone who only
   trims clips (it also stops watching the replay folder until the tab is shown again).
 - New: run logs and crash reports older than 30 days are deleted when Trimmer starts. Settings >
-  General changes the age or turns it off, and "Delete all logs now" clears them.
+  App changes the age or turns it off, and "Delete all logs now" clears them.
 - New: a Help menu with Getting started (F1), the keyboard shortcuts and the OBS tips, and a Quick
   start in the README.
 - New: a cleaner, bolder icon that stays sharp at taskbar sizes, the logo in the toolbar, and a
   small splash while Trimmer starts.
+- Changed: Settings' long General page is now two pages: Files (output folder, names, deleting
+  originals, space saved, file type, cuts, ripped audio) and App (theme, timeline previews, on
+  close, ffmpeg, logs). The "already queued" and "looks already processed" warnings are on the
+  Queue page.
 - Changed: tidier layout. The Add files / Add folder buttons are only in the toolbar (they add to
   the tab you're on), the Replay merge session list gets more room and its list, timeline and
   options can be resized by dragging, the Clips preview and options can be resized too, the kept
@@ -25,7 +29,7 @@ First release on GitHub, with a Windows installer and a portable zip.
   The release build now checks that playback loads before it's published.
 - Fixed: the Windows build's preview had no sound and was slow, because a part of Qt the video
   player needs had been left out of the build.
-- New: Settings > General > Space saved > Edit sets every figure (space saved, how much smaller
+- New: Settings > Files > Space saved > Edit sets every figure (space saved, how much smaller
   the outputs are, clips processed and the date counting started), e.g. to carry totals over.
 - New: when a source is damaged partway (for example a recording cut off by a crash), the job
   still fails and keeps the original, but the footage before the damage is saved as

@@ -106,7 +106,7 @@ def set_saved(saved_bytes: int) -> Savings:
 
 
 def set_totals(saved_bytes=None, reduction_bytes=None, clips=None, jobs=None, since=None) -> Savings:
-    """Set any of the figures by hand (Settings > General > Space saved > Edit)."""
+    """Set any of the figures by hand (Settings > Files > Space saved > Edit)."""
     with _lock:
         s = load()
         for k, v in (("saved_bytes", saved_bytes), ("reduction_bytes", reduction_bytes)):

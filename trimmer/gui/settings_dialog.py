@@ -77,6 +77,16 @@ def _shown(w, v) -> str:
 CONTROLS = (QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit, QKeySequenceEdit)
 
 
+def _form_page():
+    """An empty settings page with a form laid out like the others."""
+    w = QWidget()
+    f = QFormLayout(w)
+    f.setContentsMargins(4, 14, 4, 4)
+    f.setVerticalSpacing(10)
+    f.setHorizontalSpacing(18)
+    return w, f
+
+
 class SettingsDialog(QDialog):
     def __init__(self, settings, encoders, parent=None, _defaults=False):
         super().__init__(parent)
@@ -92,8 +102,8 @@ class SettingsDialog(QDialog):
         tabs.setDocumentMode(True)
         tabs.tabBar().setDrawBase(False)     # no stray line above the tabs, as in the main window
         lay.addWidget(tabs)
-        pages = [(self._general(), "General"), (self._compression(), "Compression"),
-                 (self._merge(), "Replay merge"), (self._queue(), "Queue"), (self._about(), "About")]
+        pages = [(self._files(), "Files"), (self._compression(), "Compression"), (self._merge(), "Replay merge"),
+                 (self._queue(), "Queue"), (self._app(), "App"), (self._about(), "About")]
         if not _defaults:
             self._add_resets([page for page, _ in pages])
         for page, title in pages:
@@ -117,11 +127,13 @@ class SettingsDialog(QDialog):
     # --------------------------------------------------------------- queue
     def _queue(self):
         s = self.s
-        w = QWidget()
-        f = QFormLayout(w)
-        f.setContentsMargins(4, 14, 4, 4)
-        f.setVerticalSpacing(10)
-        f.setHorizontalSpacing(18)
+        w, f = _form_page()
+        self.warn_dup = QCheckBox("Warn when a job is already in the queue or finished")
+        self.warn_dup.setChecked(s.warn_duplicate_jobs)
+        f.addRow("", self.warn_dup)
+        self.warn_done = QCheckBox("Warn when a file looks already trimmed, compressed or merged by Trimmer")
+        self.warn_done.setChecked(s.warn_already_processed)
+        f.addRow("", self.warn_done)
         self.game_pause = QCheckBox("Pause the queue while a game is full screen (or borderless), "
                                     "and carry on when you leave it")
         self.game_pause.setChecked(s.game_pause)
@@ -172,14 +184,10 @@ class SettingsDialog(QDialog):
         lay.addStretch(1)
         return w
 
-    # ------------------------------------------------------------- general
-    def _general(self):
+    # --------------------------------------------------------------- files
+    def _files(self):
         s = self.s
-        w = QWidget()
-        f = QFormLayout(w)
-        f.setContentsMargins(4, 14, 4, 4)
-        f.setVerticalSpacing(10)
-        f.setHorizontalSpacing(18)
+        w, f = _form_page()
         self.out = QLineEdit(s.output_dir)
         self.out.setPlaceholderText("Same folder as each original")
         b = QPushButton("Browse…")
@@ -226,12 +234,6 @@ class SettingsDialog(QDialog):
         self.qlabel = QCheckBox("Add compression details to compressed file names, e.g. (LOSSY), (CQ28, H265 NVENC)")
         self.qlabel.setChecked(s.add_quality_label)
         f.addRow("", self.qlabel)
-        self.warn_dup = QCheckBox("Warn when a job is already in the queue or finished")
-        self.warn_dup.setChecked(s.warn_duplicate_jobs)
-        f.addRow("", self.warn_dup)
-        self.warn_done = QCheckBox("Warn when a file looks already trimmed, compressed or merged by Trimmer")
-        self.warn_done.setChecked(s.warn_already_processed)
-        f.addRow("", self.warn_done)
         self.container = QComboBox()
         for text, key in (("Same as the original (MP4/MKV/MOV, others become MP4)", "same"),
                            ("Always MP4", ".mp4"), ("Always MKV", ".mkv")):
@@ -247,14 +249,32 @@ class SettingsDialog(QDialog):
                               "original; if it doesn't match, the whole trim is re-encoded instead.")
         self.smart.setChecked(s.smart_cut)
         f.addRow("", self.smart)
-        self.peek = QCheckBox("Show waveform and thumbnails on the timeline")
-        self.peek.setChecked(s.show_peek)
-        f.addRow("", self.peek)
         self.rip = QComboBox()
         for k, text in AUDIO_RIP_FORMATS.items():
             self.rip.addItem(text, k)
         self.rip.setCurrentIndex(max(0, self.rip.findData(s.rip_format)))
         f.addRow("Ripped audio format", self.rip)
+        return w
+
+    # ----------------------------------------------------------------- app
+    def _app(self):
+        s = self.s
+        w, f = _form_page()
+        self.theme = QComboBox()
+        self.theme.addItem("System (match Windows)", "system")
+        self.theme.addItem("Dark", "dark")
+        self.theme.addItem("Light", "light")
+        self.theme.setCurrentIndex(max(0, self.theme.findData(s.theme)))
+        f.addRow("Theme", self.theme)
+        self.peek = QCheckBox("Show waveform and thumbnails on the timeline")
+        self.peek.setChecked(s.show_peek)
+        f.addRow("", self.peek)
+        self.on_close = QComboBox()
+        for text, key in (("Ask me", "ask"), ("Save it and restore it next time", "save"),
+                          ("Close without saving", "discard")):
+            self.on_close.addItem(text, key)
+        self.on_close.setCurrentIndex(max(0, self.on_close.findData(s.on_close)))
+        f.addRow("On close", self.on_close)
         self.ffdir = QLineEdit(s.ffmpeg_dir)
         self.ffdir.setPlaceholderText("Use ffmpeg from PATH")
         b2 = QPushButton("Browse…")
@@ -265,18 +285,6 @@ class SettingsDialog(QDialog):
         f.addRow("ffmpeg found", ver)
         hw = [k for k in self.encoders if k != "software"]
         f.addRow("GPU encoders", QLabel(", ".join(hw) if hw else "none detected (software encoding only)"))
-        self.theme = QComboBox()
-        self.theme.addItem("System (match Windows)", "system")
-        self.theme.addItem("Dark", "dark")
-        self.theme.addItem("Light", "light")
-        self.theme.setCurrentIndex(max(0, self.theme.findData(s.theme)))
-        f.addRow("Theme", self.theme)
-        self.on_close = QComboBox()
-        for text, key in (("Ask me", "ask"), ("Save it and restore it next time", "save"),
-                          ("Close without saving", "discard")):
-            self.on_close.addItem(text, key)
-        self.on_close.setCurrentIndex(max(0, self.on_close.findData(s.on_close)))
-        f.addRow("On close", self.on_close)
         f.addRow("Settings and logs", QLabel(str(app_data_dir())))
         self.auto_logs = QCheckBox("Delete logs and crash reports older than")
         self.auto_logs.setChecked(s.auto_delete_logs)
@@ -434,11 +442,7 @@ class SettingsDialog(QDialog):
     # --------------------------------------------------------------- merge
     def _merge(self):
         s = self.s
-        w = QWidget()
-        f = QFormLayout(w)
-        f.setContentsMargins(4, 14, 4, 4)
-        f.setVerticalSpacing(10)
-        f.setHorizontalSpacing(18)
+        w, f = _form_page()
         self.show_merge = QCheckBox("Show the Replay merge tab")
         self.show_merge.setChecked(s.show_replay_merge)
         self.show_merge.setToolTip("Untick if you only trim clips. Hiding it also stops watching the replay folder; "

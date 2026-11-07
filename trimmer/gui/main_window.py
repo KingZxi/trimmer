@@ -369,7 +369,7 @@ class MainWindow(QMainWindow):
             box.addButton("Later", QMessageBox.RejectRole)
             box.exec()
             if box.clickedButton() is not pick:
-                self.show_status("ffmpeg not found: set its folder in Settings → General.")
+                self.show_status("ffmpeg not found: set its folder in Settings → App.")
                 return False
             folder = QFileDialog.getExistingDirectory(self, "Folder with ffmpeg.exe and ffprobe.exe")
             if not folder:

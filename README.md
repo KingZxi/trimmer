@@ -86,7 +86,7 @@ Drop in one clip or hundreds, either as files or whole folders. For each clip yo
   as many parts as you like to cut out the middle. Space plays, Left/Right
   step one frame, J/L jump 5 seconds, and Delete removes the selected part.
   The timeline shows thumbnails and the audio waveform, so the kill or the
-  shout is easy to spot (turn off in Settings → General).
+  shout is easy to spot (turn off in Settings → App).
 - **Choose audio tracks**: keep any of them, or mix them into one track so
   phones and Discord can hear everything. The separate tracks can be kept too.
 - **Compress** with a preset or your own settings: CRF, auto2, auto3, auto
@@ -96,12 +96,12 @@ Drop in one clip or hundreds, either as files or whole folders. For each clip yo
   rate cap.
 - **Rip** audio tracks (original, WAV, FLAC, MP3, M4A) or the video on its own.
 - Compressed files get the settings in their name, e.g. `(LOSSY), (CQ28
-  auto2, H265 NVENC, medium)`. Turn this off in Settings → General.
+  auto2, H265 NVENC, medium)`. Turn this off in Settings → Files.
 - Trimmed files get the kept times in their name, e.g.
   `(trimmed 1m05s-1m32s)`; with several parts the first two are listed, then
   `+2 more`. This also applies to each trimmed clip in Replay merge's keep
   separate mode, and to names you type yourself. Turn the times off
-  (plain `(trimmed)`) in Settings → General.
+  (plain `(trimmed)`) in Settings → Files.
 - **Name** the output: type in "Save as" (or press F2). It starts with the
   original name so you can add to it (turn this off in Settings). Ripped
   tracks use the same name.
@@ -237,10 +237,10 @@ Files that have moved are skipped and listed.
   Processing a file again adds to it. Before queueing, Trimmer warns when a job
   is already in the queue (or finished), or when a file looks already trimmed,
   compressed or merged (by that note, or by Trimmer's name tags). Both warnings
-  can be turned off in Settings.
+  can be turned off in Settings → Queue.
 - Settings, logs and crash reports are kept in `%APPDATA%\Trimmer`
   (`Logs` holds one log per run). Logs and crash reports older than 30 days
-  are deleted when Trimmer starts; Settings > General changes the age, turns
+  are deleted when Trimmer starts; Settings > App changes the age, turns
   it off, or deletes them all now.
 
 ## Project layout
