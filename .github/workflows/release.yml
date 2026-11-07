@@ -5,6 +5,7 @@
 #   git push origin v1.2.0
 # Then check the draft under Releases and press Publish.
 # "Run workflow" on the Actions tab builds without making a release.
+# Either way the tests (tests.yml) run first, and nothing is built if one fails.
 
 name: Release
 
@@ -17,7 +18,11 @@ permissions:
   contents: write
 
 jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+
   build:
+    needs: tests            # no build, and no release, unless every test passes
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5

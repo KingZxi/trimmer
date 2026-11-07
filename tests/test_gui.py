@@ -26,7 +26,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton  # noqa: E4
 
 from trimmer.core.jobs import JobOptions  # noqa: E402
 from trimmer.core.journal import clear_queue, load_queue  # noqa: E402
-from trimmer.core.session import clear_session, load_session, session_path  # noqa: E402
+from trimmer.core.session import session_path  # noqa: E402
 from trimmer.core.settings import AppSettings  # noqa: E402
 from trimmer.gui import main_window  # noqa: E402
 from trimmer.gui.main_window import MainWindow  # noqa: E402
@@ -190,7 +190,6 @@ def test_prefill_default_track_and_merged_preview():
 
 
 def test_manual_start_and_job_titles():
-    from trimmer.core.journal import clear_queue
     clear_queue()           # don't pick up jobs left by the restore test
     w = window(WORK / "out4")
     w.queue.auto_start.setChecked(False)
@@ -216,7 +215,6 @@ def test_manual_start_and_job_titles():
 
 
 def test_queue_editing_pause_and_retry():
-    from trimmer.core.journal import clear_queue
     from trimmer.gui import queue_tab as qt_mod
     clear_queue()
     w = window(WORK / "out5")
@@ -345,7 +343,6 @@ def test_clip_viewer_highlight_and_marker():
 
 def test_queue_buttons_with_selection():
     """Clicking the real buttons (they pass a 'checked' flag) must work."""
-    from trimmer.core.journal import clear_queue
     clear_queue()
     w = window(WORK / "out7")
     q = w.queue

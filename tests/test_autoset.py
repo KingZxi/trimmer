@@ -4,8 +4,8 @@ import json
 import subprocess
 import time
 
-from tests.test_engine import ctx, fresh, opts, work  # noqa: F401  (pytest fixture)
 from tests import fixtures as fx
+from tests.fixtures import ctx, fresh, opts
 from trimmer.core import encode as en
 from trimmer.core import ffmpeg as ff
 from trimmer.core import jobs as J

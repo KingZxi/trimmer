@@ -1,53 +1,22 @@
 """Engine tests on synthetic clips. Run: python -m pytest tests -q"""
 
-import os
 import re
 import shutil
-import sys
 import tempfile
 from pathlib import Path
 from typing import List
 
 import pytest
 
+from trimmer.core import ffmpeg as ff
+from trimmer.core import packets as pk
+from trimmer.core import peek
+from trimmer.core.encode import EncodeSettings
+from trimmer.core.jobs import ClipJob, MergeJob, run_job
+from tests import fixtures as fx
+from tests.fixtures import ctx, fresh, opts
+
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-os.environ.setdefault("TRIMMER_DATA_DIR", tempfile.mkdtemp(prefix="trimmer_data_"))
-
-from trimmer.core import ffmpeg as ff                     # noqa: E402
-from trimmer.core import packets as pk                    # noqa: E402
-from trimmer.core import peek                              # noqa: E402
-from trimmer.core.encode import EncodeSettings            # noqa: E402
-from trimmer.core.jobs import (ClipJob, JobContext, JobOptions, MergeJob,  # noqa: E402
-                                 run_job)
-from tests import fixtures as fx                            # noqa: E402
-
-WORK = Path(os.environ.get("TRIMMER_TEST_DIR", tempfile.gettempdir())) / "trimmer_tests"
-
-
-@pytest.fixture(scope="session")
-def work():
-    WORK.mkdir(parents=True, exist_ok=True)
-    return WORK
-
-
-def fresh(work, name):
-    d = work / name
-    shutil.rmtree(d, ignore_errors=True)
-    d.mkdir(parents=True)
-    return d
-
-
-def ctx(logs=None):
-    logs = logs if logs is not None else []
-    return JobContext(log=logs.append), logs
-
-
-def opts(out, **kw):
-    o = JobOptions(output_dir=str(out), conflict_policy="rename")
-    for k, v in kw.items():
-        setattr(o, k, v)
-    return o
 
 
 # ---------------------------------------------------------------- packets

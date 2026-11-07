@@ -1,0 +1,41 @@
+# Runs the checker and every test on each push and pull request, and before
+# every release build (release.yml waits for it).
+
+name: Tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install ffmpeg and the libraries Qt needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 libglib2.0-0
+
+      - name: Install Python packages
+        run: |
+          grep -v -i pyinstaller packaging/requirements-build.txt > requirements-ci.txt
+          python -m pip install -r requirements-ci.txt pytest==9.2.0 ruff==0.17.4
+
+      - name: Check for mistakes
+        run: ruff check .
+
+      - name: Run the tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+          TRIMMER_TEST_DIR: ${{ runner.temp }}
+        run: python -m pytest tests -q

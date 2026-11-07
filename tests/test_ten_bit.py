@@ -4,8 +4,8 @@ import json
 import re
 import subprocess
 
-from tests.test_engine import ctx, fresh, opts, work  # noqa: F401  (pytest fixture)
 from tests import fixtures as fx
+from tests.fixtures import ctx, fresh, opts
 from trimmer.core import ffmpeg as ff
 from trimmer.core.encode import EncodeSettings, quality_label, video_codec_args
 from trimmer.core.ffmpeg import MediaInfo

@@ -10,10 +10,35 @@ Two kinds of fake OBS replays:
 """
 
 import datetime as dt
+import shutil
 import subprocess
 from pathlib import Path
 
+from trimmer.core.jobs import JobContext, JobOptions
+
 BASE = dt.datetime(2026, 10, 20, 20, 0, 0)
+
+
+def fresh(work: Path, name: str) -> Path:
+    """An empty folder `name` inside `work`."""
+    d = work / name
+    shutil.rmtree(d, ignore_errors=True)
+    d.mkdir(parents=True)
+    return d
+
+
+def ctx(logs=None):
+    """A job context that collects the log lines: (context, lines)."""
+    logs = logs if logs is not None else []
+    return JobContext(log=logs.append), logs
+
+
+def opts(out, **kw) -> JobOptions:
+    """Job options that save into `out` and rename on a name clash."""
+    o = JobOptions(output_dir=str(out), conflict_policy="rename")
+    for k, v in kw.items():
+        setattr(o, k, v)
+    return o
 
 
 def run(*args):

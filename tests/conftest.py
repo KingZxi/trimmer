@@ -1,8 +1,27 @@
-"""Shared GUI test setup."""
+"""Shared test setup.
 
+Loaded by pytest before any test file, so every test uses a throwaway data folder
+and can never touch the real settings, queue or stats in %APPDATA%\\Trimmer."""
+
+import os
 import sys
+import tempfile
+from pathlib import Path
 
 import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+os.environ.setdefault("TRIMMER_DATA_DIR", tempfile.mkdtemp(prefix="trimmer_data_"))
+
+WORK = Path(os.environ.get("TRIMMER_TEST_DIR", tempfile.gettempdir())) / "trimmer_tests"
+
+
+@pytest.fixture(scope="session")
+def work():
+    """The shared folder engine tests build their clips and outputs in."""
+    WORK.mkdir(parents=True, exist_ok=True)
+    return WORK
 
 
 @pytest.fixture(autouse=True)

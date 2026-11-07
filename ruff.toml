@@ -1,0 +1,4 @@
+# Checked on every push (.github/workflows/tests.yml): mistakes only, no style rules.
+# F = undefined names, unused imports and variables; E9 = syntax errors.
+[lint]
+select = ["F", "E9"]
