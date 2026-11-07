@@ -1,0 +1,8 @@
+# Exact versions for the Windows build and the GitHub test run, so the exe you test
+# is the exe the release tag builds. requirements.txt keeps loose ranges for running
+# from source. To update: change a version here, run the tests and a test build.
+PySide6==6.12.0
+numpy==2.5.3
+Send2Trash==2.1.0
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.9

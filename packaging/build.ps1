@@ -9,17 +9,18 @@ Set-Location $root
 if (-not (Test-Path ".build-venv")) { python -m venv .build-venv }
 $py = Join-Path $root ".build-venv\Scripts\python.exe"
 & $py -m pip install --upgrade pip
-& $py -m pip install -r requirements.txt
+# Exact versions (packaging\requirements-build.txt), so every build of a version is the same.
+& $py -m pip install -r packaging\requirements-build.txt
+if ($LASTEXITCODE -ne 0) { throw "Installing the build requirements failed" }
 if ($env:TRIMMER_OWN_BOOTLOADER -eq "1") {
     # Compile PyInstaller's launcher here (needs Visual Studio's C++ tools, as on GitHub's Windows
     # machines) instead of using the prebuilt one. The prebuilt launcher is shared with a lot of
     # malware, so antivirus programs flag apps that use it far more often.
     $env:PYINSTALLER_COMPILE_BOOTLOADER = "1"
-    & $py -m pip install --force-reinstall --no-binary pyinstaller --no-cache-dir pyinstaller
-} else {
-    & $py -m pip install pyinstaller
+    $pyi = (Select-String -Path packaging\requirements-build.txt -Pattern '^pyinstaller==').Line
+    & $py -m pip install --force-reinstall --no-deps --no-binary pyinstaller --no-cache-dir $pyi
+    if ($LASTEXITCODE -ne 0) { throw "Building PyInstaller's launcher failed" }
 }
-if ($LASTEXITCODE -ne 0) { throw "Installing PyInstaller failed" }
 
 $version = (& $py packaging\make_version_info.py).Trim()
 Write-Host "Building Trimmer $version"
