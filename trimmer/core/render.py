@@ -291,70 +291,24 @@ def _drop_preroll(span: Span) -> List[str]:
     return ["-ss", "0", "-copypriorss", "0"] if span.start > 0.0005 else []
 
 
-def _encode_inputs_and_filters(spans: List[Span], encode: EncodeSettings, audio: AudioPlan,
-                               include_video: bool, normalize_audio: bool):
-    """Inputs are seeked with -ss/-t per span (fast and frame-accurate when
-    re-encoding). One span with no audio processing maps streams directly
-    (so audio can still be copied); anything else goes through one
-    filter_complex that trims, joins and mixes."""
-    first = spans[0].info
-    args = []
-    for s in spans:
-        if s.start > 0.0005:
-            args += ["-ss", f"{s.start:.3f}"]
-        if s.end is not None and s.end < s.info.duration - 0.0005:
-            args += ["-t", f"{s.length:.3f}"]
-        args += ["-i", str(s.path)]
+def audio_mix_graph(audio: AudioPlan, selected: List[int], labels: Dict[int, str]):
+    """The volume changes and the mix for the selected tracks, as filter graph parts.
 
-    n_avail = _common_track_count(spans)
-    if _max_track_count(spans) > n_avail:
-        n_avail = _max_track_count(spans)   # missing tracks are filled with silence below
-    selected = audio.selected(n_avail)
-    vf = video_filters(encode, first) if include_video else []
-    video = include_video and all(s.info.has_video for s in spans)
-
-    simple = len(spans) == 1 and not audio.needs_filter and not normalize_audio
-    if simple:
-        maps = (["-map", "0:v:0"] if video else []) + sum((["-map", f"0:a:{t}"] for t in selected), [])
-        maps += _drop_preroll(spans[0])
-        return args, {"maps": maps, "vf": vf, "out_tracks": selected, "audio_filtered": False,
-                      "src_codecs": [first.audio[t].codec for t in selected]}
-
+    labels[t] is where track t comes from: an input stream ("[1:a:0]") or a label already in the
+    graph ("[c0]"). Returns (filter parts, the output labels in order, the source track of each
+    output; None for the mix). The mix comes first; with keep_originals the mixed tracks are also
+    kept on their own after it (split first, as a label can only be used once)."""
+    labels = dict(labels)
     parts = []
-    n = len(spans)
-    w, h = first.width, first.height
-    sizes_differ = video and any((s.info.width, s.info.height) != (w, h) for s in spans)
-    for i, s in enumerate(spans):
-        if video:
-            chain = "setpts=PTS-STARTPTS"
-            if sizes_differ:
-                chain += (f",scale={w}:{h}:force_original_aspect_ratio=decrease,"
-                          f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1")
-            parts.append(f"[{i}:v:0]{chain}[v{i}]")
-        for t in selected:
-            if t < len(s.info.audio):
-                parts.append(f"[{i}:a:{t}]asetpts=PTS-STARTPTS,"
-                             f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a{i}t{t}]")
-            else:
-                # This clip lacks the track: fill with silence so the others survive.
-                parts.append(f"anullsrc=r=48000:cl=stereo,atrim=duration={s.length:.3f},"
-                             f"aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a{i}t{t}]")
-    concat_in = "".join((f"[v{i}]" if video else "") + "".join(f"[a{i}t{t}]" for t in selected)
-                        for i in range(n))
-    outs = ("[cv]" if video else "") + "".join(f"[c{t}]" for t in selected)
-    parts.append(f"{concat_in}concat=n={n}:v={1 if video else 0}:a={len(selected)}{outs}")
-
-    labels = {t: f"[c{t}]" for t in selected}
     for t in selected:
         gain = audio.volumes.get(t, 1.0)
         if abs(gain - 1.0) > 1e-6:
-            parts.append(f"[c{t}]volume={gain:.3f}[g{t}]")
+            parts.append(f"{labels[t]}volume={gain:.3f}[g{t}]")
             labels[t] = f"[g{t}]"
-    out_tracks: List[Optional[int]] = []
-    final_audio_labels = []
     mix = [t for t in (audio.mix or []) if t in selected]
+    outs: List[str] = []
+    out_tracks: List[Optional[int]] = []
     if len(mix) >= 2:
-        # Each mixed track may also be kept separately, so split it first.
         mix_in = []
         for t in mix:
             if audio.keep_originals:
@@ -365,27 +319,92 @@ def _encode_inputs_and_filters(spans: List[Span], encode: EncodeSettings, audio:
                 mix_in.append(labels[t])
         parts.append(f"{''.join(mix_in)}amix=inputs={len(mix)}:normalize=0:duration=longest,"
                      f"alimiter=limit=0.98:latency=1[mixed]")
-        final_audio_labels.append("[mixed]")
+        outs.append("[mixed]")
         out_tracks.append(None)
-        for t in selected:
-            if t in mix and not audio.keep_originals:
-                continue
-            final_audio_labels.append(labels[t])
-            out_tracks.append(t)
-    else:
-        for t in selected:
-            final_audio_labels.append(labels[t])
-            out_tracks.append(t)
+    for t in selected:
+        if len(mix) >= 2 and t in mix and not audio.keep_originals:
+            continue
+        outs.append(labels[t])
+        out_tracks.append(t)
+    return parts, outs, out_tracks
 
+
+def _maps(labels: List[str]) -> List[str]:
+    """-map for each label: a graph label as it is, an input stream ("[1:a:0]") without brackets."""
+    out = []
+    for lbl in labels:
+        inner = lbl[1:-1]
+        out += ["-map", inner if inner[:1].isdigit() else lbl]
+    return out
+
+
+def _seek_inputs(spans: List[Span]) -> List[str]:
+    """Each span as an input, seeked with -ss/-t (fast, and frame-accurate when re-encoding)."""
+    args = []
+    for s in spans:
+        if s.start > 0.0005:
+            args += ["-ss", f"{s.start:.3f}"]
+        if s.end is not None and s.end < s.info.duration - 0.0005:
+            args += ["-t", f"{s.length:.3f}"]
+        args += ["-i", str(s.path)]
+    return args
+
+
+def _join_graph(spans: List[Span], selected: List[int], video: bool) -> List[str]:
+    """Filter graph parts that start every input at 0, give them one picture size and one audio
+    format, and join them: the picture as [cv], each selected track t as [c<t>]. A clip missing a
+    track gets silence there, so the clips that have it keep it."""
+    parts = []
+    first = spans[0].info
+    w, h = first.width, first.height
+    sizes_differ = video and any((s.info.width, s.info.height) != (w, h) for s in spans)
+    fmt = "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
+    for i, s in enumerate(spans):
+        if video:
+            chain = "setpts=PTS-STARTPTS"
+            if sizes_differ:
+                chain += (f",scale={w}:{h}:force_original_aspect_ratio=decrease,"
+                          f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1")
+            parts.append(f"[{i}:v:0]{chain}[v{i}]")
+        for t in selected:
+            if t < len(s.info.audio):
+                parts.append(f"[{i}:a:{t}]asetpts=PTS-STARTPTS,{fmt}[a{i}t{t}]")
+            else:
+                parts.append(f"anullsrc=r=48000:cl=stereo,atrim=duration={s.length:.3f},{fmt}[a{i}t{t}]")
+    n = len(spans)
+    concat_in = "".join((f"[v{i}]" if video else "") + "".join(f"[a{i}t{t}]" for t in selected)
+                        for i in range(n))
+    outs = ("[cv]" if video else "") + "".join(f"[c{t}]" for t in selected)
+    parts.append(f"{concat_in}concat=n={n}:v={1 if video else 0}:a={len(selected)}{outs}")
+    return parts
+
+
+def _encode_inputs_and_filters(spans: List[Span], encode: EncodeSettings, audio: AudioPlan,
+                               include_video: bool, normalize_audio: bool):
+    """Inputs, maps and filters for an encode. One span with no audio processing maps streams
+    directly (so audio can still be copied); anything else goes through one filter_complex
+    that trims, joins and mixes."""
+    first = spans[0].info
+    args = _seek_inputs(spans)
+    selected = audio.selected(_max_track_count(spans))     # missing tracks are filled with silence
+    vf = video_filters(encode, first) if include_video else []
+    video = include_video and all(s.info.has_video for s in spans)
+
+    if len(spans) == 1 and not audio.needs_filter and not normalize_audio:
+        maps = (["-map", "0:v:0"] if video else []) + sum((["-map", f"0:a:{t}"] for t in selected), [])
+        maps += _drop_preroll(spans[0])
+        return args, {"maps": maps, "vf": vf, "out_tracks": selected, "audio_filtered": False,
+                      "src_codecs": [first.audio[t].codec for t in selected]}
+
+    parts = _join_graph(spans, selected, video)
+    aparts, alabels, out_tracks = audio_mix_graph(audio, selected, {t: f"[c{t}]" for t in selected})
+    parts += aparts
     maps = []
     if video:
         if vf:
             parts.append(f"[cv]{','.join(vf)}[vout]")
-            maps += ["-map", "[vout]"]
-        else:
-            maps += ["-map", "[cv]"]
-    for lbl in final_audio_labels:
-        maps += ["-map", lbl]
+        maps += ["-map", "[vout]" if vf else "[cv]"]
+    maps += _maps(alabels)
     args += ["-filter_complex", ";".join(parts)]
     return args, {"maps": maps, "vf": [], "out_tracks": out_tracks, "audio_filtered": True,
                   "src_codecs": []}
@@ -396,43 +415,32 @@ def copy_audio_maps(first: MediaInfo, audio: AudioPlan, selected: List[int], con
     """Audio for a stream-copy output: (filter parts, maps, output tracks,
     audio codec args). Tracks are copied untouched unless a mix or volume
     change needs them re-encoded."""
-    src = f"{input_index}:a"
-    out_tracks: List[Optional[int]] = []
-    maps, parts = [], []
-    mix = [t for t in (audio.mix or []) if t in selected]
     if not audio.needs_filter:
-        for t in selected:
-            maps += ["-map", f"{src}:{t}"]
-            out_tracks.append(t)
+        maps = sum((["-map", f"{input_index}:a:{t}"] for t in selected), [])
         ok = all(can_copy_audio(first.audio[t].codec, container) for t in selected)
-        return parts, maps, out_tracks, (["-c:a", "copy"] if ok else ["-c:a", "aac", "-b:a", "256k"])
-    labels = {}
-    for t in selected:
-        gain = audio.volumes.get(t, 1.0)
-        labels[t] = f"[{src}:{t}]"
-        if abs(gain - 1.0) > 1e-6:
-            parts.append(f"[{src}:{t}]volume={gain:.3f}[g{t}]")
-            labels[t] = f"[g{t}]"
-    if len(mix) >= 2:
-        mix_in = []
-        for t in mix:
-            if audio.keep_originals:
-                parts.append(f"{labels[t]}asplit=2[m{t}][k{t}]")
-                mix_in.append(f"[m{t}]")
-                labels[t] = f"[k{t}]"
-            else:
-                mix_in.append(labels[t])
-        parts.append(f"{''.join(mix_in)}amix=inputs={len(mix)}:normalize=0:duration=longest,"
-                     f"alimiter=limit=0.98:latency=1[mixed]")
-        maps += ["-map", "[mixed]"]
-        out_tracks.append(None)
-    for t in selected:
-        if t in mix and len(mix) >= 2 and not audio.keep_originals:
-            continue
-        # A track the filter graph doesn't touch is mapped from the input itself.
-        maps += ["-map", labels[t] if labels[t] != f"[{src}:{t}]" else f"{src}:{t}"]
-        out_tracks.append(t)
-    return parts, maps, out_tracks, ["-c:a", "aac", "-b:a", "192k"]
+        return [], maps, list(selected), (["-c:a", "copy"] if ok else ["-c:a", "aac", "-b:a", "256k"])
+    parts, labels, out_tracks = audio_mix_graph(audio, selected, {t: f"[{input_index}:a:{t}]" for t in selected})
+    return parts, _maps(labels), out_tracks, ["-c:a", "aac", "-b:a", "192k"]
+
+
+def encode_join_args(encode: EncodeSettings, info: MediaInfo, audio: AudioPlan, selected: List[int],
+                     audio_input: int, quality: Optional[int], container: str):
+    """Maps, filters and codecs that encode an exact packet join: input 0 holds its picture,
+    input audio_input its sound (0 when it has none). Returns (args, the output's audio tracks)."""
+    parts, vmap = [], "0:v:0"
+    vf = video_filters(encode, info)
+    if vf:
+        parts.append(f"[0:v:0]{','.join(vf)}[vout]")
+        vmap = "[vout]"
+    aparts, alabels, out_tracks = ([], [], []) if not audio_input else \
+        audio_mix_graph(audio, selected, {t: f"[{audio_input}:a:{t}]" for t in selected})
+    parts += aparts
+    args = (["-filter_complex", ";".join(parts)] if parts else []) + ["-map", vmap] + _maps(alabels)
+    args += video_codec_args(encode, info, quality=quality if quality is not None else 18, container=container)
+    args += _audio_codec_args(encode, {"out_tracks": out_tracks, "audio_filtered": bool(aparts),
+                                       "src_codecs": [info.audio[t].codec for t in selected]}, container)
+    args += _track_meta_args(info, out_tracks, "Mixed")
+    return args, out_tracks
 
 
 def _render_copy(spans, out_path, audio: AudioPlan, include_video, mixed_label, total,

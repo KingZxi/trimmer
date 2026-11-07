@@ -3,13 +3,13 @@ or is lost, and a stream copy is checked packet by packet against the sources.""
 
 import tempfile
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from .. import ffmpeg as ff
 from .. import merge as mg
 from .. import packets as pk
-from ..encode import EncodeSettings, resolve_quality, video_codec_args, video_filters
-from ..render import AudioPlan, _audio_codec_args, _track_meta_args, output_ext
+from ..encode import EncodeSettings, resolve_quality
+from ..render import AudioPlan, encode_join_args, output_ext
 from ..tag import tag_args
 from ..util import format_hms_ms, sanitize_filename
 from .checks import _gap_section, _piece_windows
@@ -107,7 +107,7 @@ def _packet_output(job, ctx, pj: pk.PacketJoin, folder: Path, stem: str, ext: st
                      if enc is not None and enc.mode == "lossy" else (None, None))
         label = _qlabel(opts, enc, q, method) if enc is not None else ""
         e = enc or EncodeSettings.from_dict(EXACT_SETTINGS.to_dict())
-        codec_args, out_tracks = _packet_encode_args(e, info, audio, selected, a_in, q, ext)
+        codec_args, out_tracks = encode_join_args(e, info, audio, selected, a_in, q, ext)
         args = inputs + codec_args + faststart + tag_args(_merge_tag(job, info.trimmer_tag, audio, n_avail, enc, q))
 
         def compressed(limit: Optional[int]) -> Path:
@@ -121,47 +121,6 @@ def _packet_output(job, ctx, pj: pk.PacketJoin, folder: Path, stem: str, ext: st
                               predict=(enc, q, pj.pieces[0].clip.path, info, total))
     ctx.log(f"Saved {final.name}")
     return final
-
-
-def _packet_encode_args(e: EncodeSettings, info, audio: AudioPlan, selected: List[int], a_in: int, q,
-                        ext: str) -> Tuple[List[str], List[Optional[int]]]:
-    """The maps, filters and codecs that encode a packet join (input 0: video, input a_in: audio).
-    Returns them with the output's audio tracks (source track numbers; None for the mix)."""
-    parts, amap = [], []
-    vf = video_filters(e, info)
-    vmap = "0:v:0"
-    if vf:
-        parts.append(f"[0:v:0]{','.join(vf)}[vout]")
-        vmap = "[vout]"
-    mix = [t for t in (audio.mix or []) if t in selected]
-    out_tracks = []
-    if len(mix) >= 2 and a_in:
-        mix_in = []
-        for t in mix:
-            if audio.keep_originals:
-                parts.append(f"[{a_in}:a:{t}]asplit=2[m{t}][k{t}]")
-                mix_in.append(f"[m{t}]")
-            else:
-                mix_in.append(f"[{a_in}:a:{t}]")
-        parts.append(f"{''.join(mix_in)}amix=inputs={len(mix)}:normalize=0:duration=longest,"
-                     f"alimiter=limit=0.98:latency=1[mixed]")
-        amap.append("[mixed]")
-        out_tracks.append(None)
-        for t in selected:
-            if t in mix and not audio.keep_originals:
-                continue
-            amap.append(f"[k{t}]" if t in mix else f"{a_in}:a:{t}")
-            out_tracks.append(t)
-    elif a_in:
-        amap = [f"{a_in}:a:{t}" for t in selected]
-        out_tracks = list(selected)
-    args = ["-filter_complex", ";".join(parts)] if parts else []
-    args += ["-map", vmap] + sum((["-map", m] for m in amap), [])
-    args += video_codec_args(e, info, quality=q if q is not None else 18, container=ext)
-    args += _audio_codec_args(e, {"out_tracks": out_tracks, "audio_filtered": bool(parts and mix),
-                                  "src_codecs": [info.audio[t].codec for t in selected]}, ext)
-    args += _track_meta_args(info, out_tracks, "Mixed")
-    return args, out_tracks
 
 
 def _log_splices_packets(ctx, pj: pk.PacketJoin):
