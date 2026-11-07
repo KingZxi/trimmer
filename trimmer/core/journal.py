@@ -7,7 +7,8 @@
 - Completed record: CSV of finished jobs keyed by each source's path, size
   and modified time, so a replaced file with the same name is redone.
 - Queue file: the pending queue as JSON, so an interrupted batch can be
-  restored when the app next opens.
+  restored when the app next opens. Written crash-safely (util.write_safely),
+  so a crash or power cut mid-save leaves the previous copy, never an empty file.
 - Crash log: full traceback, written by the app's exception hook.
 """
 
@@ -16,13 +17,14 @@ import json
 import os
 import platform
 import sys
+import threading
 import time
 import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import List
 
-from .util import app_data_dir, format_size, logs_dir
+from .util import app_data_dir, format_size, logs_dir, read_safely, write_safely
 
 COMPLETED_FILE = "completed.csv"
 QUEUE_FILE = "queue.json"
@@ -115,26 +117,43 @@ class CompletedRecord:
             pass
 
 
+# The queue tab and the queue runner (a separate thread) both save the queue.
+_queue_lock = threading.Lock()
+
+
+def _queue_path() -> Path:
+    return app_data_dir() / QUEUE_FILE
+
+
 def save_queue(jobs_as_dicts):
-    try:
-        _fsync_write(app_data_dir() / QUEUE_FILE, json.dumps(jobs_as_dicts, indent=1))
-    except OSError:
-        pass
+    with _queue_lock:
+        try:
+            write_safely(_queue_path(), json.dumps(jobs_as_dicts, indent=1))
+        except OSError:
+            pass
 
 
 def load_queue():
-    try:
-        data = json.loads((app_data_dir() / QUEUE_FILE).read_text(encoding="utf-8"))
+    """The saved jobs; a file damaged by a crash falls back to the previous copy."""
+    p = _queue_path()
+    for read in (lambda: read_safely(p), lambda: p.with_name(p.name + ".bak").read_text(encoding="utf-8")):
+        try:
+            data = json.loads(read())
+        except (OSError, json.JSONDecodeError):
+            continue
         return data if isinstance(data, list) else []
-    except (OSError, json.JSONDecodeError):
-        return []
+    return []
 
 
 def clear_queue():
-    try:
-        (app_data_dir() / QUEUE_FILE).unlink()
-    except OSError:
-        pass
+    """Forget the saved queue, its previous copy too (else load_queue would bring that back)."""
+    with _queue_lock:
+        p = _queue_path()
+        for f in (p, p.with_name(p.name + ".bak")):
+            try:
+                f.unlink()
+            except OSError:
+                pass
 
 
 LOG_PATTERNS = ("log (*).txt", "crash (*).txt", "playback.txt")

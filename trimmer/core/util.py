@@ -4,6 +4,7 @@ handling and the per-user data folder."""
 import os
 import re
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -121,11 +122,17 @@ def write_safely(path: Path, text: str) -> None:
     name.bak. Raises OSError."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
+    # A temporary name of its own, so two saves at once can't write into the same file.
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+    except BaseException:
+        safe_unlink(tmp)
+        raise
     if path.exists() and path.stat().st_size > 0:
         bak = path.with_name(path.name + ".bak")
         try:
