@@ -20,9 +20,8 @@ from ..core.util import format_hms, format_hms_ms, format_size, same_file, sanit
 from .queue_checks import check_new_jobs
 from .audio_device import follow_default_output
 from .theme import set_kind
-from .widgets import (OWN_TIP, STAR, EncodeForm, FullScreen, HintTable, OptionBinding, Timeline, TrackPicker, card,
-                      clean_opts,
-                      clearable, copy_opts, hbox, label, show_in_folder)
+from .widgets import (OWN_TIP, STAR, EncodeForm, FullScreen, HintTable, OptionBinding, OwnOptions, Timeline,
+                      TrackPicker, card, clean_opts, clearable, copy_opts, hbox, label, show_in_folder)
 
 # Qt's player, or the silent frame fallback when Windows blocks its DLLs
 from .playback import (HAVE_PLAYBACK, NO_SOUND, NO_SOUND_TIP, PLAYBACK_ERROR, QAudioOutput, QMediaPlayer,
@@ -80,7 +79,7 @@ class CustomEncodeDialog(QDialog):
         lay.addWidget(bb)
 
 
-class ClipsTab(QWidget):
+class ClipsTab(OwnOptions, QWidget):
     queue_jobs = Signal(list)
     status = Signal(str)
 
@@ -734,9 +733,21 @@ class ClipsTab(QWidget):
         self._fill_row(self.entries.index(e), e)
 
     # ------------------------------------------------------ per-clip options
-    def _eff(self, e) -> dict:
-        """The options a clip is saved with: its own, else the shared ones."""
-        return e.opts or self.shared
+    def _own(self, e):
+        return e.opts
+
+    def _set_own(self, e, opts):
+        e.opts = opts
+
+    def _option_items(self):
+        return self.selected_entries()
+
+    def _options_changed(self, entries):
+        for e in entries:
+            self._fill_row(self.entries.index(e), e)
+
+    def _show_current_opts(self):
+        self._show_opts(self.selected_entries())
 
     def _show_opts(self, sel):
         """Show the first selected clip's options, or the shared ones when nothing is selected."""
@@ -750,42 +761,6 @@ class ClipsTab(QWidget):
         self._build_track_checks(sel or self.entries, st)
         self.form.write(st)
         self.b_shared.setEnabled(any(e.opts is not None for e in sel))
-
-    def _change(self, fn):
-        """Apply a change: to the shared options, or to each selected clip's own (starting from what
-        it uses now)."""
-        sel = self.selected_entries()
-        if not sel:
-            fn(self.shared)
-            return
-        for e in sel:
-            if e.opts is None:
-                e.opts = copy_opts(self.shared)
-            fn(e.opts)
-            self._fill_row(self.entries.index(e), e)
-        self.b_shared.setEnabled(True)
-
-    def _opt_changed(self, key, value):
-        self._change(lambda st: st.__setitem__(key, value))
-
-    def _track_toggled(self, key, t, on):
-        if self.form.writing:
-            return
-        add = on if key == "rip_tracks" else not on
-
-        def fn(st):
-            got = set(st[key])
-            (got.add if add else got.discard)(t)
-            st[key] = sorted(got)
-        self._change(fn)
-
-    def use_shared(self):
-        """The selected clips drop their own options."""
-        sel = self.selected_entries()
-        for e in sel:
-            e.opts = None
-            self._fill_row(self.entries.index(e), e)
-        self._show_opts(sel)
 
     def deselect_all(self):
         self.table.selectionModel().clear()

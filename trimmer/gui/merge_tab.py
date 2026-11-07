@@ -22,8 +22,8 @@ from ..core.render import AUDIO_RIP_FORMATS
 from ..core.jobs import JobContext, JobOptions, MergeJob, run_job, session_names
 from ..core.util import VIDEO_EXTENSIONS, format_hms, format_hms_ms, parse_timecode, same_file, sanitize_filename
 from .theme import colour, set_kind
-from .widgets import (OWN_TIP, STAR, HintTree, OptionBinding, card, clean_opts, copy_opts, hbox, label,
-                      show_in_folder)
+from .widgets import (OWN_TIP, STAR, HintTree, OptionBinding, OwnOptions, card, clean_opts, copy_opts, hbox,
+                      label, show_in_folder)
 from .clips_tab import CustomEncodeDialog
 from .folder_watch import FolderWatcher
 from .preview import PreviewDialog
@@ -162,7 +162,7 @@ class _Bridge(QObject):
     stage = Signal(str)
 
 
-class MergeTab(QWidget):
+class MergeTab(OwnOptions, QWidget):
     queue_jobs = Signal(list)
     status = Signal(str)
 
@@ -402,9 +402,24 @@ class MergeTab(QWidget):
         return o
 
     # ------------------------------------------------- per-session options
-    def _eff(self, s) -> dict:
-        """The options a session is saved with: its own, else the shared ones."""
-        return self.custom.get(id(s)) or self.shared
+    def _own(self, s):
+        return self.custom.get(id(s))
+
+    def _set_own(self, s, opts):
+        if opts is None:
+            self.custom.pop(id(s), None)
+        else:
+            self.custom[id(s)] = opts
+
+    def _option_items(self):
+        return [self.sessions[i] for i in self._selected_sessions()]
+
+    def _options_changed(self, sessions):
+        self._mark_stars()
+
+    def _show_current_opts(self):
+        self._show_opts()
+        self._refresh_default_names()
 
     def _selected_sessions(self):
         """Indices of the sessions under the selected rows (a clip row means its session)."""
@@ -435,36 +450,10 @@ class MergeTab(QWidget):
         self.form.write(self._shown_opts())
         self.b_shared.setEnabled(any(id(self.sessions[i]) in self.custom for i in sel))
 
-    def _change(self, fn):
-        """Apply a change: to the shared options, or to each selected session's own (starting from
-        what it uses now)."""
-        sel = self._selected_sessions()
-        if not sel:
-            fn(self.shared)
-            return
-        for i in sel:
-            s = self.sessions[i]
-            if id(s) not in self.custom:
-                self.custom[id(s)] = copy_opts(self.shared)
-            fn(self.custom[id(s)])
-        self._mark_stars()
-        self.b_shared.setEnabled(True)
-
     def _opt_changed(self, key, value):
-        self._change(lambda st: st.__setitem__(key, value))
+        super()._opt_changed(key, value)
         if key == "mode":
             self._refresh_default_names()
-
-    def _track_toggled(self, key, t, on):
-        if self.form.writing:
-            return
-        add = on if key == "rip_tracks" else not on
-
-        def fn(st):
-            got = set(st[key])
-            (got.add if add else got.discard)(t)
-            st[key] = sorted(got)
-        self._change(fn)
 
     def _mark_stars(self):
         self.tree.blockSignals(True)
@@ -474,14 +463,6 @@ class MergeTab(QWidget):
             it.setText(0, STAR + s.name if own else s.name)
             it.setToolTip(0, OWN_TIP if own else "")
         self.tree.blockSignals(False)
-
-    def use_shared(self):
-        """The selected sessions drop their own options."""
-        for i in self._selected_sessions():
-            self.custom.pop(id(self.sessions[i]), None)
-        self._mark_stars()
-        self._show_opts()
-        self._refresh_default_names()
 
     def deselect_all(self):
         self.tree.selectionModel().clear()

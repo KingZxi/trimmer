@@ -5,6 +5,7 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Optional
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QUrl, Signal
 from PySide6.QtGui import (QColor, QDesktopServices, QFont, QIcon, QImage, QKeySequence, QPainter, QPainterPath,
@@ -127,6 +128,75 @@ def clean_opts(data, base: dict) -> dict:
         elif type(got) is type(v):
             out[k] = got
     return out
+
+
+class OwnOptions:
+    """Per-item options (★) for the Clips and Replay merge tabs, mixed into the tab.
+
+    With nothing selected a change goes to the options every item shares (self.shared); with
+    items selected it goes to each one's own options, which start as a copy of what it uses now.
+    The tab says where an item keeps its own options (_own, _set_own), which items are selected
+    (_option_items), what to redraw after a change (_options_changed) and how to show the
+    options again (_show_current_opts)."""
+
+    shared: dict
+
+    def _own(self, item) -> Optional[dict]:
+        raise NotImplementedError
+
+    def _set_own(self, item, opts: Optional[dict]):
+        raise NotImplementedError
+
+    def _option_items(self) -> list:
+        raise NotImplementedError
+
+    def _options_changed(self, items):
+        """Redraw what shows which items have their own options."""
+
+    def _show_current_opts(self):
+        raise NotImplementedError
+
+    def _eff(self, item) -> dict:
+        """The options an item is saved with: its own, else the shared ones."""
+        return self._own(item) or self.shared
+
+    def _change(self, fn):
+        """Apply fn to the shared options, or to each selected item's own."""
+        items = self._option_items()
+        if not items:
+            fn(self.shared)
+            return
+        for it in items:
+            if self._own(it) is None:
+                self._set_own(it, copy_opts(self.shared))
+            fn(self._own(it))
+        self._options_changed(items)
+        self.b_shared.setEnabled(True)
+
+    def _opt_changed(self, key, value):
+        if key not in self.shared:
+            raise KeyError(f"no option called {key!r}")      # a mistyped key fails the first time
+        self._change(lambda st: st.__setitem__(key, value))
+
+    def _track_toggled(self, key, t, on):
+        """A track's box: "rip_tracks" lists the ticked tracks, "drop_tracks" the unticked ones."""
+        if self.form.writing:
+            return
+        add = on if key == "rip_tracks" else not on
+
+        def fn(st):
+            got = set(st[key])
+            (got.add if add else got.discard)(t)
+            st[key] = sorted(got)
+        self._change(fn)
+
+    def use_shared(self):
+        """The selected items drop their own options."""
+        items = self._option_items()
+        for it in items:
+            self._set_own(it, None)
+        self._options_changed(items)
+        self._show_current_opts()
 
 
 class OptionBinding:
