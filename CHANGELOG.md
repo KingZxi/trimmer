@@ -72,6 +72,22 @@ First release on GitHub, with a Windows installer and a portable zip.
   trial for "Auto settings, measured" / Auto 3 that was still testing a waiting clip. Cancelling
   now stops those trials at once, closing Trimmer ends every ffmpeg it started, and on Windows
   each ffmpeg is tied to Trimmer so it ends too if Trimmer crashes or is ended from Task Manager.
+- New: when ffmpeg fails, the queue says why in plain words (the disk is full, the file is open
+  in another program, the GPU encoder isn't available, the source is damaged...), with ffmpeg's
+  own last lines below it in the job's details.
+- Fixed: a crash or power cut while Trimmer was saving the waiting queue could lose it. The queue
+  is now saved the same safe way as the settings.
+- Changed: audio rips, video-only rips and Replay merge's separate clips from a damaged source
+  also keep the footage before the damage as "(partial, first ...)", like the main video.
+- Changed: when "keep the original if compressing would make it bigger" skips a compressed file
+  before making it, there's no longer a name-clash question about that file.
+- Changed: each saved file's length is checked more closely against what was asked for (within
+  1 second, or 0.2% on long files; it was 2%, which let up to 12 seconds go missing from a
+  10-minute clip unnoticed).
+- Changed: Clips > Estimate size follows "keep the original if compressing would make it bigger",
+  as the queue does, and no longer guesses lossless sizes: lossless clips are listed as not counted.
+- Fixed: an exact Replay merge with a resolution or frame rate cap re-encoded the sound when only one
+  track was chosen to mix. It is copied untouched now.
 
 ## 1.1.0 (2026-10-30)
 
