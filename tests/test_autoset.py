@@ -80,7 +80,7 @@ def test_clip_job_analyses_and_uses_the_choice(work):
 def test_job_with_chosen_settings_skips_the_analysis(work, monkeypatch):
     src = fx.single_clip(work / "single")
     out = fresh(work, "out_autoset_chosen")
-    monkeypatch.setattr(J, "pick_settings", lambda *a, **k: (_ for _ in ()).throw(AssertionError("analysed")))
+    monkeypatch.setattr("trimmer.core.jobs.run.pick_settings", lambda *a, **k: (_ for _ in ()).throw(AssertionError("analysed")))
     enc = autoset(chosen={"codec": "h264", "quality": 31, "ten_bit": False, "report": ["Auto settings: H264 CRF 31"]})
     job = ClipJob(str(src), compress=True, encode=enc.to_dict(), options=opts(out))
     assert not J.needs_analysis(job)

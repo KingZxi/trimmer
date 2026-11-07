@@ -20,8 +20,8 @@ _THEN = "; then "
 
 _CODEC_NAMES = {"h264": "H.264", "h265": "H.265", "av1": "AV1"}
 
-# What the name tags and the Merged default name look like (see jobs._tags,
-# encode.quality_label and jobs.session_names).
+# What the name tags and the Merged default name look like (see jobs.clip_job._tags,
+# encode.quality_label and jobs.merge_job.session_names).
 _NAME_TRIM = re.compile(r"\([^()]*\btrimmed\b[^()]*\)", re.I)
 _NAME_COMPRESS = re.compile(r"\((?:LOSSY|LOSSLESS)\)|\(TARGET [\d.]+MB\)|\((?:CRF|CQ)\d+", re.I)
 _NAME_MERGED = re.compile(r"^Merged \d{4}-\d\d-\d\d \d\d-\d\d-\d\d to \d\d-\d\d-\d\d")

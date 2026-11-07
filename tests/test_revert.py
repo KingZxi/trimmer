@@ -1,7 +1,7 @@
 """"Keep the original if compressing would make it bigger", on every way a file is saved.
 
-Written before the save paths in jobs.py were brought together, to pin down what each one did:
-the output's name, the job's status, what the log says, and that nothing half-written is left.
+Written before every save path went through one helper (jobs/output.py), to pin down what each one
+did: the output's name, the job's status, what the log says, and that nothing half-written is left.
 """
 
 from tests import fixtures as fx

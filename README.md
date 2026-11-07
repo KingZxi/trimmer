@@ -253,7 +253,8 @@ trimmer/core/           the engine (no Qt): probing, rendering, jobs
   smartcut.py           frame-exact trims that re-encode only around each cut
   packets.py            exact replay joins by matching encoded packets
   merge.py              grouping replays into sessions, the fallback join, info files
-  jobs.py               what the queue runs, output checks, deleting originals
+  jobs/                 what the queue runs: clip and replay merge jobs, saving and
+                        checking each output, deleting originals
   tag.py                the hidden "Trimmer:" tag and spotting work done twice
   encode.py             compression settings, auto quality, size prediction
   peek.py               waveform and thumbnails for the timeline
