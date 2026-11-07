@@ -1,60 +1,21 @@
 """Drives the real window headlessly: add a clip, trim and queue it, detect
 and merge a replay session, cancel a job, and restore the queue after quitting."""
 
-import os
 import shutil
-import sys
-import tempfile
-import time
 from pathlib import Path
 
-import pytest
+# First: this sets up the offscreen app and the tests' own data folder.
+from tests.gui_helpers import WORK, app, gameplay_clip, obs_stream, pump, replays, window  # noqa: F401
+from tests import fixtures as fx
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-pytest.importorskip("PySide6.QtWidgets")
-
-WORK = Path(os.environ.get("TRIMMER_TEST_DIR", tempfile.gettempdir())) / "trimmer_gui_tests"
-shutil.rmtree(WORK, ignore_errors=True)
-WORK.mkdir(parents=True)
-os.environ["TRIMMER_DATA_DIR"] = str(WORK / "appdata")
-
-from tests import fixtures as fx  # noqa: E402
-from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton  # noqa: E402
-
-from trimmer.core.jobs import JobOptions  # noqa: E402
-from trimmer.core.journal import clear_queue, load_queue  # noqa: E402
-from trimmer.core.session import session_path  # noqa: E402
-from trimmer.core.settings import AppSettings  # noqa: E402
-from trimmer.gui import main_window  # noqa: E402
-from trimmer.gui.main_window import MainWindow  # noqa: E402
-from trimmer.gui.settings_dialog import SettingsDialog  # noqa: E402
-
-app = QApplication.instance() or QApplication([])
-QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
-# The queue warnings open a real dialog; these older tests queue the same file
-# twice on purpose, so they answer "add anyway" (tests/test_warnings.py covers the dialogs).
-from trimmer.gui import queue_checks  # noqa: E402
-queue_checks.ask = lambda *a, **k: ("anyway", False)
-
-
-def pump(sec, cond=lambda: False):
-    end = time.time() + sec
-    while time.time() < end and not cond():
-        app.processEvents()
-        time.sleep(0.02)
-
-
-def window(out):
-    s = AppSettings.load()
-    s.output_dir = str(out)
-    w = MainWindow(s)
-    w.show()
-    w.startup_checks()
-    pump(1)
-    return w
+from trimmer.core.jobs import JobOptions
+from trimmer.core.journal import load_queue
+from trimmer.core.session import session_path
+from trimmer.core.settings import AppSettings
+from trimmer.gui import main_window
+from trimmer.gui.settings_dialog import SettingsDialog
 
 
 def finished(w):
@@ -62,9 +23,8 @@ def finished(w):
 
 
 def test_trim_and_merge_through_gui():
-    (WORK / "src").mkdir()
-    clip = fx.single_clip(WORK / "src")
-    fx.shared_replays(WORK / "rep")
+    clip = gameplay_clip()
+    rep = replays()
     w = window(WORK / "out")
     w._route([str(clip)])
     pump(15, lambda: w.clips.entries)
@@ -82,7 +42,7 @@ def test_trim_and_merge_through_gui():
     assert "Space saved:" in w.queue.savings.text() and "1 clip " in w.queue.savings.text()
 
     w.tabs.setCurrentWidget(w.merge)
-    w._route([str(WORK / "rep")])
+    w._route([str(rep)])
     pump(30, lambda: w.merge.sessions)
     assert [len(s.clips) for s in w.merge.sessions] == [4, 1]
     top = w.merge.tree.topLevelItem(0)
@@ -101,8 +61,7 @@ def test_trim_and_merge_through_gui():
 
 
 def test_settings_cancel_and_restore():
-    (WORK / "src2").mkdir()
-    src = fx.long_encode(WORK / "src2")
+    src = obs_stream()
     out = WORK / "out2"
     w = window(out)
     d = SettingsDialog(w.settings, w.encoders, w)
@@ -115,8 +74,6 @@ def test_settings_cancel_and_restore():
     d._save()
     assert JobOptions.from_settings(AppSettings.load()).use_packet_matching is False
     assert JobOptions.from_settings(AppSettings.load()).add_trim_range is False
-    w.settings.add_trim_range = True
-    w.settings.save()
 
     w._route([str(src)])
     pump(15, lambda: w.clips.entries)
@@ -145,7 +102,7 @@ def test_prefill_default_track_and_merged_preview():
     w = window(WORK / "out3")
     w.settings.prefill_names = True
     w.settings.extra_trim_padding = 0.0      # the length check below assumes no repeated footage
-    w._route([str(WORK / "src" / "Gameplay clip.mp4")])
+    w._route([str(gameplay_clip())])
     pump(15, lambda: w.clips.entries)
     w.clips.table.selectRow(0)
     pump(1)
@@ -166,7 +123,7 @@ def test_prefill_default_track_and_merged_preview():
     assert picker.currentIndex() == 0 and "default" in picker.itemText(0)
 
     w.tabs.setCurrentWidget(w.merge)
-    w._route([str(WORK / "rep")])
+    w._route([str(replays())])
     pump(30, lambda: w.merge.sessions)
     w.merge.tree.setCurrentItem(w.merge.tree.topLevelItem(0))
     w.merge.preview_merged()
@@ -190,11 +147,10 @@ def test_prefill_default_track_and_merged_preview():
 
 
 def test_manual_start_and_job_titles():
-    clear_queue()           # don't pick up jobs left by the restore test
     w = window(WORK / "out4")
     w.queue.auto_start.setChecked(False)
     assert AppSettings.load().ui.get("auto_start_queue") is False
-    w._route([str(WORK / "src" / "Gameplay clip.mp4")])
+    w._route([str(gameplay_clip())])
     pump(15, lambda: w.clips.entries)
     w.clips.table.selectRow(0)
     pump(1)
@@ -216,11 +172,10 @@ def test_manual_start_and_job_titles():
 
 def test_queue_editing_pause_and_retry():
     from trimmer.gui import queue_tab as qt_mod
-    clear_queue()
     w = window(WORK / "out5")
     q = w.queue
     q.auto_start.setChecked(False)
-    w._route([str(WORK / "src2" / "obs_stream.mp4"), str(WORK / "src" / "Gameplay clip.mp4")])
+    w._route([str(obs_stream()), str(gameplay_clip())])
     pump(15, lambda: len(w.clips.entries) == 2)
     w.clips.table.selectAll()
     pump(1)
@@ -292,9 +247,8 @@ def test_queue_editing_pause_and_retry():
 def test_clip_viewer_highlight_and_marker():
     from trimmer.gui.preview import PreviewDialog
     w = window(WORK / "out6")
-    w.settings.ui["packet_matching"] = True       # an earlier test turned it off
     w.tabs.setCurrentWidget(w.merge)
-    w._route([str(WORK / "rep")])
+    w._route([str(replays())])
     pump(30, lambda: w.merge.sessions)
     m = w.merge
     m.tree.setCurrentItem(m.tree.topLevelItem(0))
@@ -343,11 +297,10 @@ def test_clip_viewer_highlight_and_marker():
 
 def test_queue_buttons_with_selection():
     """Clicking the real buttons (they pass a 'checked' flag) must work."""
-    clear_queue()
     w = window(WORK / "out7")
     q = w.queue
     q.auto_start.setChecked(False)
-    w._route([str(WORK / "src" / "Gameplay clip.mp4")])
+    w._route([str(gameplay_clip())])
     pump(15, lambda: w.clips.entries)
     w.clips.table.selectRow(0)
     pump(1)
@@ -1141,7 +1094,7 @@ def test_queue_deletes_an_original_only_after_every_job_using_it():
 
     def make():
         p = src_dir / "clip.mp4"
-        shutil.copy(fx.single_clip(WORK / "src"), p)
+        shutil.copy(gameplay_clip(), p)
         return p
 
     def job(p, seg, delete, policy="rename"):
@@ -1205,7 +1158,7 @@ def test_split_parts_into_separate_clips(monkeypatch):
     src = WORK / "split_src"
     src.mkdir(parents=True, exist_ok=True)
     clip = src / "Split me.mp4"
-    shutil.copy(fx.single_clip(WORK / "src"), clip)
+    shutil.copy(gameplay_clip(), clip)
     w = window(WORK / "split_out")
     w.queue.auto_start.setChecked(False)
     c = w.clips
@@ -1260,7 +1213,7 @@ def test_full_screen_preview_and_back():
     pump(0.5)
     assert not c.full.active and c.stage.parentWidget() is home and home.layout().indexOf(c.stage) == i
 
-    d = PreviewDialog(w, fx.single_clip(WORK / "src"), "Viewer", parent=w)
+    d = PreviewDialog(w, gameplay_clip(), "Viewer", parent=w)
     d.show()
     pump(0.5)
     d.full.enter()
@@ -1277,7 +1230,7 @@ def test_queue_closes_the_preview_before_deleting_an_original(monkeypatch):
     src = WORK / "release_src"
     src.mkdir(parents=True, exist_ok=True)
     clip = src / "Release me.mp4"
-    shutil.copy(fx.single_clip(WORK / "src"), clip)
+    shutil.copy(gameplay_clip(), clip)
     w = window(WORK / "release_out")
     w.settings.permanent_delete = True
     c = w.clips
@@ -1322,7 +1275,7 @@ def test_split_here_makes_parts_with_nothing_between():
     src = WORK / "splithere_src"
     src.mkdir(parents=True, exist_ok=True)
     clip = src / "Cut me.mp4"
-    shutil.copy(fx.single_clip(WORK / "src"), clip)
+    shutil.copy(gameplay_clip(), clip)
     w = window(WORK / "splithere_out")
     c = w.clips
     w._route([str(clip)])

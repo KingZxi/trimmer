@@ -26,7 +26,8 @@ def work():
 
 @pytest.fixture(autouse=True)
 def close_dialog(request):
-    """Closing never opens the real Save/Close dialog; leftovers don't leak into the next test.
+    """Each GUI test starts from a clean data folder, closing never opens the real Save/Close
+    dialog, and leftovers don't leak into the next test.
     (Patched by hand: a test's monkeypatch.undo() would take a fixture's patch away too.)"""
     if request.module.__name__ not in ("tests.test_gui", "tests.test_warnings"):
         yield                       # engine tests: no window, and never touch the real app data
@@ -34,10 +35,24 @@ def close_dialog(request):
     from trimmer.gui import main_window
     from trimmer.core.journal import clear_queue
     from trimmer.core.session import autosave_path, clear_session
+    from trimmer.core.util import app_data_dir
+    from tests.gui_helpers import WORK
+    # Every GUI test starts like a first run: default settings and totals, no queue or saved state.
+    assert WORK in app_data_dir().parents           # the tests' own data folder, never the real one
+    for f in app_data_dir().glob("*.json*"):
+        f.unlink()
     real = main_window.ask_close_choice
     main_window.ask_close_choice = lambda parent: ("save", False)
     main_window.MainWindow.AUTOSAVE_MS = 0      # tests call autosave() themselves; no stray timers
     yield
+    # Windows a test left open are closed and freed, so later tests (and theme changes) don't
+    # have to restyle all of them.
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QApplication
+    for w in QApplication.topLevelWidgets():
+        w.close()
+        w.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
     main_window.ask_close_choice = real
     clear_session()
     clear_session(autosave_path())

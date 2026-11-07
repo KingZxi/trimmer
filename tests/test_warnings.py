@@ -5,9 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 from tests import fixtures as fx
-from tests.test_gui import WORK, pump, window  # also sets up the offscreen app and data folder
+from tests.gui_helpers import WORK, pump, window  # also sets up the offscreen app and data folder
 from trimmer.core.jobs import ClipJob, JobContext, JobOptions, JobResult, MergeJob, run_job
-from trimmer.core.journal import clear_queue
 from trimmer.core.settings import AppSettings
 from trimmer.gui import queue_checks as qc
 
@@ -41,7 +40,6 @@ def use(monkeypatch, asker):
 
 
 def clip_window(out, src):
-    clear_queue()
     w = window(out)
     w.queue.auto_start.setChecked(False)
     w._route([str(src)])
@@ -98,7 +96,6 @@ def test_duplicate_clip_job_warning(monkeypatch):
 
 def test_duplicate_merge_job_warning(monkeypatch):
     fx.shared_replays(WORK / "wrep")
-    clear_queue()
     w = window(WORK / "wout2")
     w.queue.auto_start.setChecked(False)
     w.tabs.setCurrentWidget(w.merge)

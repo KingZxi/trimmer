@@ -10,13 +10,19 @@ Two kinds of fake OBS replays:
 """
 
 import datetime as dt
+import hashlib
+import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from trimmer.core.jobs import JobContext, JobOptions
 
 BASE = dt.datetime(2026, 10, 20, 20, 0, 0)
+# The long source encodes take seconds each, so they are made once here and copied wherever a test
+# asks for them. Each name carries a hash of its ffmpeg arguments: changing them makes a new file.
+STOCK = Path(os.environ.get("TRIMMER_TEST_DIR", tempfile.gettempdir())) / "trimmer_stock"
 
 
 def fresh(work: Path, name: str) -> Path:
@@ -50,29 +56,49 @@ def replay_name(offset_s: int, ext=".mp4", extra="") -> str:
     return f"Replay {t.strftime('%Y-%m-%d %H-%M-%S')}{extra}{ext}"
 
 
-def master(folder: Path, seconds=70) -> Path:
-    """Moving picture + two distinctive audio tracks (Mic, Desktop)."""
-    out = folder / "master.mkv"
-    if out.exists():
-        return out
-    run("-f", "lavfi", "-i", f"testsrc2=s=640x360:r=30:d={seconds}",
-        "-f", "lavfi", "-i", f"anoisesrc=d={seconds}:c=pink:r=48000:a=0.3:seed=7",
-        "-f", "lavfi", "-i", f"aevalsrc=0.2*sin(2*PI*(200+40*t)*t):s=48000:d={seconds}",
-        "-map", "0:v", "-map", "1:a", "-map", "2:a",
-        "-c:v", "libx264", "-qp", "0", "-preset", "ultrafast", "-c:a", "flac", str(out))
+def _made(name: str, inputs: list, args: list) -> Path:
+    """The stock file made by `ffmpeg <inputs> <args>` (made the first time it is asked for)."""
+    key = hashlib.sha1(repr((inputs, args)).encode()).hexdigest()[:10]
+    stock = STOCK / f"{Path(name).stem}-{key}{Path(name).suffix}"
+    if not stock.exists():
+        STOCK.mkdir(parents=True, exist_ok=True)
+        making = stock.with_name("making-" + stock.name)
+        run(*inputs, *args, str(making))
+        making.replace(stock)
+    return stock
+
+
+def _copied(made: Path, out: Path) -> Path:
+    if not out.exists():
+        out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(made, out)
     return out
+
+
+def _master(seconds) -> Path:
+    return _made("master.mkv",
+                 ["-f", "lavfi", "-i", f"testsrc2=s=640x360:r=30:d={seconds}",
+                  "-f", "lavfi", "-i", f"anoisesrc=d={seconds}:c=pink:r=48000:a=0.3:seed=7",
+                  "-f", "lavfi", "-i", f"aevalsrc=0.2*sin(2*PI*(200+40*t)*t):s=48000:d={seconds}"],
+                 ["-map", "0:v", "-map", "1:a", "-map", "2:a",
+                  "-c:v", "libx264", "-qp", "0", "-preset", "ultrafast", "-c:a", "flac"])
+
+
+def master(folder: Path, seconds=70) -> Path:
+    """folder/master.mkv: a moving picture + two distinctive audio tracks (Mic, Desktop)."""
+    return _copied(_master(seconds), folder / "master.mkv")
 
 
 def long_encode(folder: Path, seconds=70) -> Path:
-    """The 'OBS encoder output': one continuous H.264/AAC stream, 2 s GOP."""
+    """folder/obs_stream.mp4, the 'OBS encoder output': one continuous H.264/AAC stream, 2 s GOP."""
     out = folder / "obs_stream.mp4"
     if out.exists():
         return out
-    m = master(folder, seconds)
-    run("-i", str(m), "-map", "0", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-g", "60", "-bf", "2", "-c:a", "aac", "-b:a", "128k",
-        "-metadata:s:a:0", "handler_name=Mic", "-metadata:s:a:1", "handler_name=Desktop", str(out))
-    return out
+    made = _made("obs_stream.mp4", ["-i", str(_master(seconds))],
+                 ["-map", "0", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                  "-g", "60", "-bf", "2", "-c:a", "aac", "-b:a", "128k",
+                  "-metadata:s:a:0", "handler_name=Mic", "-metadata:s:a:1", "handler_name=Desktop"])
+    return _copied(made, out)
 
 
 def shared_replays(folder: Path):
