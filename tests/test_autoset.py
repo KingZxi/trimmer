@@ -89,9 +89,8 @@ def test_job_with_chosen_settings_skips_the_analysis(work, monkeypatch):
     assert r.status == "done", logs
     f = next(out.glob("*.mp4"))
     assert "(CRF31 autoset, H264, ultrafast)" in f.name and codec_of(f)["codec_name"] == "h264"
-    # The resume record treats the analysed and unanalysed job as the same work.
     plain = ClipJob(str(src), compress=True, encode=autoset().to_dict(), options=opts(out))
-    assert J.job_key(job) == J.job_key(plain) and J.needs_analysis(plain)
+    assert J.needs_analysis(plain)
     assert J.job_from_dict(json.loads(json.dumps(J.job_to_dict(job)))).encode["chosen"]["quality"] == 31
 
 

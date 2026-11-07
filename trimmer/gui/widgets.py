@@ -498,11 +498,9 @@ class EncodeForm(QWidget):
             "and very old devices may not play it. Leave off for clips you share.\n"
             "It can't be undone later without re-encoding.")
         self.revert = QCheckBox("Keep the original if compressing would make it bigger")
-        self.revert_hint = QLabel()
         f.addRow("Method", self.mode)
         f.addRow("Codec", self.codec)
         f.addRow("Encoder", self.encoder)
-        self.crf_row = f.rowCount()
         f.addRow("CRF / quality", self.crf)
         self.auto3_target = QComboBox()
         for label, v in AUTO3_TARGETS:

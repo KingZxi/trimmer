@@ -178,10 +178,6 @@ class EncodeSettings:
         return out
 
 
-def crf_range(codec: str) -> Tuple[int, int]:
-    return (0, 63) if codec == "av1" else (0, 51)
-
-
 def quality_label(settings: EncodeSettings, quality: int, method: str = None) -> str:
     """Text appended to output names, e.g. ' (LOSSY), (CRF23, H265, medium)'.
     Same format as the old compressor so existing outputs still make sense."""

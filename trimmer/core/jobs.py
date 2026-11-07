@@ -11,8 +11,6 @@ that looks finished. Originals are only deleted (Recycle Bin by default)
 after every output of the job has been verified.
 """
 
-import hashlib
-import json
 import os
 import re
 import shutil
@@ -115,26 +113,6 @@ class ClipJob:
     def sources(self) -> List[str]:
         return [self.source]
 
-    def summary(self) -> str:
-        bits = []
-        if self.segments:
-            bits.append(f"trim ({len(self.segments)} part{'s' if len(self.segments) > 1 else ''})")
-        if self.compress:
-            bits.append("compress")
-        if self.make_video and self.audio_tracks == []:
-            bits.append("no audio")
-        if self.mix_tracks:
-            bits.append("mix audio")
-        if self.rip_audio_tracks:
-            bits.append(f"rip {len(self.rip_audio_tracks)} audio")
-        if self.rip_video:
-            bits.append("rip video")
-        if not bits:
-            bits.append("copy")
-        if self.options.delete_originals:
-            bits.append("delete original")
-        return ", ".join(bits)
-
 
 @dataclass
 class MergeJob:
@@ -160,24 +138,6 @@ class MergeJob:
     def sources(self) -> List[str]:
         return list(self.clip_paths)
 
-    def summary(self) -> str:
-        bits = [self.options.merge_mode]
-        if self.compress:
-            bits.append("compress")
-        if self.make_video and self.audio_tracks == []:
-            bits.append("no audio")
-        if self.mix_tracks:
-            bits.append("mix audio")
-        if not self.make_video:
-            bits.append("no video file")
-        if self.rip_audio_tracks:
-            bits.append(f"rip {len(self.rip_audio_tracks)} audio")
-        if self.rip_video:
-            bits.append("rip video")
-        if self.options.delete_originals:
-            bits.append("delete originals")
-        return ", ".join(bits)
-
 
 def job_to_dict(job) -> dict:
     return asdict(job)
@@ -192,18 +152,6 @@ def job_from_dict(d: dict):
     if cls is ClipJob:
         fields_["segments"] = [tuple(s) for s in fields_.get("segments", [])]
     return cls(options=opts, **fields_)
-
-
-def job_key(job) -> str:
-    """Identifies "this exact work on these exact files" for the resume record."""
-    from .journal import source_key
-    d = job_to_dict(job)
-    d.pop("options", None)
-    if isinstance(d.get("encode"), dict):
-        d["encode"] = {k: v for k, v in d["encode"].items() if k != "chosen"}   # same work, analysed or not
-    d["_sources"] = [source_key(s) for s in job.sources()]
-    d["_out"] = job.options.output_dir
-    return hashlib.sha1(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()
 
 
 @dataclass

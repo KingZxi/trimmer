@@ -16,7 +16,7 @@ from PySide6.QtCore import QThread, Signal
 from ..core import jobs as J
 from ..core import savings
 from ..core.ffmpeg import Cancelled, CancelToken
-from ..core.journal import CompletedRecord, RunLog, save_queue
+from ..core.journal import RunLog, save_queue
 from ..core.util import format_size, recycle_or_delete, same_file
 
 
@@ -175,7 +175,6 @@ class QueueRunner(QThread):
         self.item_log.emit(item.id, msg)
 
     def run(self):
-        record = CompletedRecord()
         runlog = RunLog("per-job settings (see each job)")
         runlog.write("Status: IN PROGRESS -- starting")
         cancelled = False
@@ -210,14 +209,11 @@ class QueueRunner(QThread):
             ctx = J.JobContext(log=log, progress=progress, resolve_conflict=self._ask, cancel=token,
                                still_needed=lambda p, item=item: self._still_needed(p, item))
             ctx.release = self._release
-            key = J.job_key(item.job)
             try:
                 res = J.run_job(item.job, ctx)
                 savings.record(res, self.count_kept())      # before the status flips, so the GUI sees it
                 item.result = res
                 item.status = res.status
-                if res.status in ("done", "reverted"):
-                    record.add(key, res.outputs)
                 text = {"done": "done", "reverted": "kept original (compressed would be larger)",
                         "skipped": "skipped", "failed": "; ".join(res.messages)[:200]}.get(res.status, res.status)
                 if res.in_bytes and res.out_bytes:

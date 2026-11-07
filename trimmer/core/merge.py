@@ -388,15 +388,6 @@ def pick_lossless_cut(path: Path, trim_start: float, never_lose: bool = True,
     return cut, f"nearest keyframe is {residual:.2f}s early"
 
 
-def compute_splice_points(plan) -> List[Tuple[float, ReplayClip, ReplayClip]]:
-    points, cumulative = [], 0.0
-    for i, e in enumerate(plan):
-        cumulative += e.clip.duration - e.trim_start
-        if i < len(plan) - 1:
-            points.append((cumulative, e.clip, plan[i + 1].clip))
-    return points
-
-
 # --------------------------------------------------------------------------
 # Session overview (used by the GUI timeline and dry-run)
 # --------------------------------------------------------------------------

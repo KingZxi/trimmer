@@ -1,18 +1,15 @@
-"""Run logs, the resume record and queue persistence.
+"""Run logs, queue persistence and crash logs.
 
 - Run log: one human-readable text file per batch, fully rewritten and
   fsynced before and after every job. A hard crash leaves it frozen on
   "IN PROGRESS -- currently processing: X", which tells you exactly where
   it stopped (kept from the old compressor).
-- Completed record: CSV of finished jobs keyed by each source's path, size
-  and modified time, so a replaced file with the same name is redone.
 - Queue file: the pending queue as JSON, so an interrupted batch can be
   restored when the app next opens. Written crash-safely (util.write_safely),
   so a crash or power cut mid-save leaves the previous copy, never an empty file.
 - Crash log: full traceback, written by the app's exception hook.
 """
 
-import csv
 import json
 import os
 import platform
@@ -26,7 +23,6 @@ from typing import List
 
 from .util import app_data_dir, format_size, logs_dir, read_safely, write_safely
 
-COMPLETED_FILE = "completed.csv"
 QUEUE_FILE = "queue.json"
 
 
@@ -36,15 +32,6 @@ def _fsync_write(path: Path, text: str):
         f.write(text)
         f.flush()
         os.fsync(f.fileno())
-
-
-def source_key(path) -> str:
-    p = Path(path)
-    try:
-        st = p.stat()
-        return f"{p.resolve()}|{st.st_size}|{int(st.st_mtime)}"
-    except OSError:
-        return str(p)
 
 
 class RunLog:
@@ -84,35 +71,6 @@ class RunLog:
                   f"  Space saved:     {format_size(saved)} ({pct:.1f}%)"]
         try:
             _fsync_write(self.path, "\n".join(lines) + "\n")
-        except OSError:
-            pass
-
-
-class CompletedRecord:
-    def __init__(self):
-        self.path = app_data_dir() / COMPLETED_FILE
-        self.keys = set()
-        try:
-            with open(self.path, newline="", encoding="utf-8") as f:
-                for row in csv.DictReader(f):
-                    if row.get("job_key"):
-                        self.keys.add(row["job_key"])
-        except (OSError, csv.Error):
-            pass
-
-    def add(self, job_key: str, outputs):
-        self.keys.add(job_key)
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            new = not self.path.exists() or self.path.stat().st_size == 0
-            with open(self.path, "a", newline="", encoding="utf-8") as f:
-                w = csv.writer(f)
-                if new:
-                    w.writerow(["timestamp", "job_key", "outputs"])
-                w.writerow([datetime.now().isoformat(timespec="seconds"), job_key,
-                            " | ".join(str(o) for o in outputs)])
-                f.flush()
-                os.fsync(f.fileno())
         except OSError:
             pass
 
