@@ -663,7 +663,7 @@ def _write_video(job: ClipJob, ctx: JobContext, info, spans: List[Span], out_dir
             return _write_copy(job, ctx, info, spans, final, audio, res,
                                _clip_tag(job, info, audio, video_only=name_extra == VIDEO_ONLY))
         if not r.ok:
-            raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
+            raise ff.failure("Saving failed", r)
         expected = kept
         n_audio = _n_out_audio(audio, len(info.audio))
         ctx.stage("Verifying")
@@ -705,7 +705,8 @@ def _write_smart(job: ClipJob, ctx, info, spans: List[Span], final: Path,
         ctx.log(f"Smart cut not possible ({e}); re-encoding the trim instead.")
         return None
     if not r.ok:
-        ctx.log(f"Smart cut failed; re-encoding the trim instead.\n{r.stderr_tail[-400:]}")
+        ctx.log(f"Smart cut failed ({ff.explain_failure(r.stderr_tail)}); re-encoding the trim instead.\n"
+                f"{r.stderr_tail[-400:]}")
         return None
     ctx.stage("Verifying")
     problem = verify_output(part, sum(s.length for s in spans), True, _n_out_audio(audio, len(info.audio)))
@@ -741,7 +742,7 @@ def _write_copy(job: ClipJob, ctx, info, spans: List[Span], final: Path, audio: 
         r = render(spans, part, encode=None, quality=None, audio=audio,
                    on_progress=ctx.reporter("Copying (no re-encode)"), cancel=ctx.cancel, tag=tag)
         if not r.ok:
-            raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
+            raise ff.failure("Saving failed", r)
     ctx.stage("Verifying")
     expected = sum(s.length for s in spans)
     problem = verify_output(part, expected, True, _n_out_audio(audio, len(info.audio)))
@@ -768,7 +769,7 @@ def _write_rip(ctx: JobContext, opts: JobOptions, spans: List[Span], t: int, nam
     r, tmp_path = rip_audio(spans, t, fmt, tmp_base, ctx.reporter(f"Ripping audio track {t + 1}"), ctx.cancel,
                             tag=tag)
     if not r.ok:
-        raise FFmpegError(f"ffmpeg failed ripping track {t + 1}:\n{r.stderr_tail}")
+        raise ff.failure(f"Ripping audio track {t + 1} failed", r)
     final = _claim(out_dir / f"{name}{tmp_path.suffix}", ctx, opts, sources)
     problem = verify_output(tmp_path, sum(s.length for s in spans), expect_video=False, n_audio=1)
     if problem:
@@ -1052,7 +1053,7 @@ def _rip_session(job: MergeJob, ctx: JobContext, session: mg.SessionPlan, out_ro
                            cancel=ctx.cancel, log=ctx.log,
                            tag=build_tag(info.trimmer_tag, ["video only"]))
                 if not r.ok:
-                    raise FFmpegError(f"ffmpeg failed ripping the video:\n{r.stderr_tail}")
+                    raise ff.failure("Ripping the video failed", r)
                 problem = verify_output(part, info.duration, True, 0)
                 if problem:
                     safe_unlink(part)
@@ -1194,7 +1195,7 @@ def _packet_output(job, ctx, pj: pk.PacketJoin, folder: Path, stem: str, ext: st
         args += tag_args(tag) + ["-y", str(part)]
         r = ff.run_ffmpeg(args, total, ctx.reporter(stage), ctx.cancel, output_path=part)
         if not r.ok:
-            raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
+            raise ff.failure("Saving failed", r)
         ctx.stage("Checking nothing was lost")
         problem = verify_output(part, total, True, len(selected))
         if not problem:
@@ -1257,7 +1258,7 @@ def _packet_output(job, ctx, pj: pk.PacketJoin, folder: Path, stem: str, ext: st
             return _packet_output(job, ctx, pj, folder, stem, ext, None, audio, srcs, tmpdir, stage, trim,
                                   NOT_COMPRESSED)
         if not r.ok:
-            raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
+            raise ff.failure("Saving failed", r)
         ctx.stage("Verifying")
         problem = verify_output(part, total, True, len(out_tracks))
         if problem:
@@ -1403,7 +1404,7 @@ def _fallback_session(job, ctx, session: mg.SessionPlan, out_root, merged_name, 
                     continue
                 break
             if not r.ok:
-                raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
+                raise ff.failure("Saving failed", r)
             problem = verify_output(part, span.length, True, None)
             if problem:
                 safe_unlink(part)
@@ -1485,7 +1486,7 @@ def _fallback_session(job, ctx, session: mg.SessionPlan, out_root, merged_name, 
             continue
         break
     if not r.ok:
-        raise FFmpegError(f"ffmpeg failed:\n{r.stderr_tail}")
+        raise ff.failure("Saving failed", r)
     ctx.stage("Verifying")
     problem = verify_output(part, total, True, None)
     if problem:

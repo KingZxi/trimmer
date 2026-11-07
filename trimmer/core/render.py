@@ -195,7 +195,7 @@ def cut_audio_copy(ranges: List[tuple], tmpdir: Path, cancel: CancelToken = None
             args += ["-t", f"{last - first:.6f}"]
         r = ff.run_ffmpeg(args + ["-y", str(piece)], 0, None, cancel, output_path=piece)
         if not r.ok:
-            raise ff.FFmpegError(f"cutting the audio failed:\n{r.stderr_tail}")
+            raise ff.failure("Cutting the audio failed", r)
         lines.append(f"file '{piece.resolve().as_posix()}'")
     path = tmpdir / "audio.ffconcat"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

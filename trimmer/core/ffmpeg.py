@@ -12,6 +12,7 @@ import atexit
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -584,6 +585,48 @@ class RunResult:
     @property
     def ok(self) -> bool:
         return self.status == "ok"
+
+
+# The commonest ways ffmpeg fails, in words a user can act on. First match wins.
+_KNOWN_FAILURES = [
+    (r"No space left on device|not enough space on the disk",
+     "the disk is full. Free some space where the output is saved and retry."),
+    (r"Permission denied|being used by another process|Access is denied",
+     "Windows wouldn't let ffmpeg open a file. It may be open in another program, "
+     "or the output folder may be read-only."),
+    (r"OpenEncodeSessionEx failed|No capable devices found|Cannot load nvcuda|"
+     r"Driver does not support the required nvenc API|minimum required Nvidia driver",
+     "the NVIDIA encoder couldn't start. Update the graphics driver, or choose Software (CPU) as the encoder."),
+    (r"Error initializing an internal MFX session|Error creating a MFX session",
+     "Intel Quick Sync couldn't start. Update the graphics driver, or choose Software (CPU) as the encoder."),
+    (r"amfrt64\.dll|AMF failed|AMF initialisation failed|AMF initialization failed",
+     "the AMD encoder couldn't start. Update the graphics driver, or choose Software (CPU) as the encoder."),
+    (r"Invalid data found when processing input|moov atom not found",
+     "a source file is damaged or incomplete, for example a recording cut off by a crash."),
+    (r"No such file or directory",
+     "a file is missing. It may have been moved, renamed or deleted while the job ran."),
+    (r"Unknown encoder|Encoder not found",
+     "this ffmpeg build doesn't have the encoder these settings need."),
+]
+
+
+def explain_failure(stderr_tail: str) -> str:
+    """What went wrong, from ffmpeg's error output: a plain sentence for the
+    common failures, else ffmpeg's own last error line."""
+    text = stderr_tail or ""
+    for pattern, meaning in _KNOWN_FAILURES:
+        if re.search(pattern, text, re.IGNORECASE):
+            return meaning
+    lines = [ln.strip() for ln in text.splitlines()
+             if ln.strip() and ln.strip() != "Conversion failed!" and not ln.startswith((" ", "frame=", "size="))]
+    return lines[-1][:200] if lines else "ffmpeg stopped with an error."
+
+
+def failure(what: str, result: "RunResult") -> FFmpegError:
+    """The error for a failed run: "<what>: <why>" on the first line (the queue
+    shows that), ffmpeg's own output below it for the details and the log."""
+    return FFmpegError(f"{what}: {explain_failure(result.stderr_tail)}\n\nffmpeg's output:\n"
+                       f"{result.stderr_tail.strip()}")
 
 
 def _terminate(process):
