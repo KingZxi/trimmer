@@ -27,6 +27,9 @@ First release on GitHub, with a Windows installer and a portable zip.
   player needs had been left out of the build.
 - New: Settings > General > Space saved > Edit sets every figure (space saved, how much smaller
   the outputs are, clips processed and the date counting started), e.g. to carry totals over.
+- New: when a source is damaged partway (for example a recording cut off by a crash), the job
+  still fails and keeps the original, but the footage before the damage is saved as
+  "name (partial, first 1h27m13s)" instead of being thrown away.
 - Fixed: a crash or power cut while Trimmer was saving could empty its settings or the space
   saved totals. Both are now written safely, and the previous copy is used if a file is damaged.
 - Fixed: a stray line above the Settings tabs.

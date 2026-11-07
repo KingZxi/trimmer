@@ -14,6 +14,7 @@ after every output of the job has been verified.
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 from dataclasses import asdict, dataclass, field, replace
@@ -30,7 +31,7 @@ from .render import (AudioPlan, Span, copy_compatible, output_ext, render, rip_a
                      snap_spans_to_keyframes, verify_output)
 from .smartcut import SmartCutError, smart_render
 from .tag import build_tag, describe_encode, tag_args
-from .util import (VIDEO_EXTENSIONS, format_hms_ms, format_size, recycle_or_delete, safe_unlink, same_file,
+from .util import (VIDEO_EXTENSIONS, format_hms, format_hms_ms, format_name_time, format_size, recycle_or_delete, safe_unlink, same_file,
                    sanitize_filename, trim_range_label, unique_path)
 
 VIDEO_ONLY = " - video only"      # name extra of the video-only rip
@@ -286,6 +287,27 @@ def _claim(path: Path, ctx: JobContext, opts: JobOptions, sources: List[Path]) -
 
 def _part(path: Path) -> Path:
     return path.with_name(f"{path.stem}.part{path.suffix}")
+
+
+def _reject(ctx, part: Path, final: Path, problem: str, what: str = "Output failed verification"):
+    """A saved file failed its check: delete it and fail the job (originals are never touched then).
+    When it only came out short, the source is usually damaged partway (a recording cut off by a
+    crash): the part that could be read is kept, clearly named, so the good footage isn't lost."""
+    m = re.match(r"output is ([0-9.]+)s long but ([0-9.]+)s was expected", problem or "")
+    got = float(m.group(1)) if m else 0.0
+    if m and 10 <= got < float(m.group(2)) and part.exists():
+        partial = unique_path(final.with_name(f"{final.stem} (partial, first {format_name_time(got)}){final.suffix}"))
+        try:
+            os.replace(part, partial)
+        except OSError:
+            partial = None
+        if partial is not None:
+            ctx.log(f"Kept what could be saved as {partial.name}")
+            raise FFmpegError(f"{what}: {problem}. The source is probably damaged after "
+                              f"{format_hms(got)}: the part before it was saved as \"{partial.name}\". "
+                              "The original was kept.")
+    safe_unlink(part)
+    raise FFmpegError(f"{what}: {problem}")
 
 
 def _finish(part: Path, final: Path, date_source: Path = None):
@@ -699,8 +721,7 @@ def _write_video(job: ClipJob, ctx: JobContext, info, spans: List[Span], out_dir
         ctx.stage("Verifying")
         problem = verify_output(part, expected, True, n_audio)
         if problem:
-            safe_unlink(part)
-            raise FFmpegError(f"Output failed verification: {problem}")
+            _reject(ctx, part, final, problem)
         _verify_frames(ctx, part, expected, info.fps, _span_windows(spans), "Output")
         _finish(part, final, src)
         return final
@@ -779,8 +800,7 @@ def _write_copy(job: ClipJob, ctx, info, spans: List[Span], final: Path, audio: 
     if not problem and len(spans) == 1 and not whole:
         problem = check_copy_trim(src, part, want[0][0], want[0][1])
     if problem:
-        safe_unlink(part)
-        raise FFmpegError(f"Output failed verification: {problem}")
+        _reject(ctx, part, final, problem)
     _note_source_gaps(ctx, _span_windows(spans), info.fps)
     _finish(part, final, src)
     return final
@@ -1236,8 +1256,7 @@ def _packet_output(job, ctx, pj: pk.PacketJoin, folder: Path, stem: str, ext: st
             got_a = pk.read_packets(part, "audio").hashes
             problem = pk.compare(pj.expected_audio(), got_a, "audio")
         if problem:
-            safe_unlink(part)
-            raise FFmpegError(f"Merge failed the nothing-lost check: {problem}")
+            _reject(ctx, part, final, problem, "Merge failed the nothing-lost check")
         ctx.log("Nothing-lost check passed: every source frame is in the output exactly once.")
         _note_source_gaps(ctx, _piece_windows(pj), info.fps)
     else:
@@ -1294,8 +1313,7 @@ def _packet_output(job, ctx, pj: pk.PacketJoin, folder: Path, stem: str, ext: st
         ctx.stage("Verifying")
         problem = verify_output(part, total, True, len(out_tracks))
         if problem:
-            safe_unlink(part)
-            raise FFmpegError(f"Output failed verification: {problem}")
+            _reject(ctx, part, final, problem)
         _verify_frames(ctx, part, total, info.fps, _piece_windows(pj), "Output")
     _finish(part, final, pj.pieces[-1].clip.path)
     ctx.log(f"Saved {final.name}")
@@ -1523,8 +1541,7 @@ def _fallback_session(job, ctx, session: mg.SessionPlan, out_root, merged_name, 
     ctx.stage("Verifying")
     problem = verify_output(part, total, True, None)
     if problem:
-        safe_unlink(part)
-        raise FFmpegError(f"Merge failed verification: {problem}")
+        _reject(ctx, part, final, problem, "Merge failed verification")
     if use_enc is not None:
         _verify_frames(ctx, part, total, first.info.fps, _span_windows(spans), "Merge")
     else:
