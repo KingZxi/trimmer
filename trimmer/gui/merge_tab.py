@@ -6,7 +6,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QItemSelectionModel, QObject, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QFileDialog, QFrame,
                                QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QProgressDialog, QPushButton,
@@ -22,8 +22,8 @@ from ..core.render import AUDIO_RIP_FORMATS
 from ..core.jobs import JobContext, JobOptions, MergeJob, run_job, session_names
 from ..core.util import VIDEO_EXTENSIONS, format_hms, format_hms_ms, parse_timecode, same_file, sanitize_filename
 from .theme import colour, set_kind
-from .widgets import (OWN_TIP, STAR, HintTree, OptionBinding, OwnOptions, card, clean_opts, copy_opts, hbox,
-                      label, show_in_folder)
+from .widgets import (OWN_TIP, STAR, HeaderSort, HintTree, OptionBinding, OwnOptions, card, clean_opts, copy_opts,
+                      hbox, label, show_in_folder, sort_text)
 from .clips_tab import CustomEncodeDialog
 from .folder_watch import FolderWatcher
 from .preview import PreviewDialog
@@ -255,6 +255,8 @@ class MergeTab(OwnOptions, QWidget):
         sc = QShortcut(QKeySequence("Shift+Delete"), self.tree)
         sc.activated.connect(lambda: self.delete_selected())
         self.tree.header().setHighlightSections(False)
+        self.sorter = HeaderSort(self.tree, (0, 1, 2, 3), self.sort_by,
+                                 tip="Click to sort the sessions by this column")
         self.tree.itemSelectionChanged.connect(self._sel)
         split.addWidget(self.tree)
         vc, vcl = card(margins=(12, 10, 12, 8), spacing=4)
@@ -549,7 +551,40 @@ class MergeTab(OwnOptions, QWidget):
         self.tasks.append(t)
         t.start()
 
+    def sort_by(self, col, descending=False):
+        """Reorder the sessions by a column. Rows keep their ticks, names, notes and selection;
+        a session's clips stay in time order under it."""
+        n = min(self.tree.topLevelItemCount(), len(self.sessions))
+        if n < 2:
+            return n > 0
+        rows = [(self.sessions[i], self.tree.topLevelItem(i)) for i in range(n)]
+        keys = {0: lambda r: r[0].start, 1: lambda r: len(r[0].clips),
+                2: lambda r: (r[0].end - r[0].start).total_seconds(),
+                3: lambda r: sort_text(r[1].text(3))}
+        rows.sort(key=keys[col], reverse=descending)
+        open_rows = {id(it) for _, it in rows if it.isExpanded()}
+        picked = {id(it) for it in self.tree.selectedItems()}
+        current = self.tree.currentItem()
+        self.tree.blockSignals(True)
+        try:
+            for _ in range(n):
+                self.tree.takeTopLevelItem(0)
+            for _, it in rows:
+                self.tree.addTopLevelItem(it)
+            self.sessions[:n] = [sess for sess, _ in rows]
+            for sess, it in rows:
+                it.setExpanded(id(it) in open_rows)
+                it.setSelected(id(it) in picked)
+                for k in range(it.childCount()):
+                    it.child(k).setSelected(id(it.child(k)) in picked)
+            if current is not None:
+                self.tree.setCurrentItem(current, 0, QItemSelectionModel.NoUpdate)
+        finally:
+            self.tree.blockSignals(False)
+        return True
+
     def _show(self, sessions, skipped, notes):
+        self.sorter.clear()           # found again in time order
         # Ticks, names, own options and the selection carry over to the sessions found again
         self._saved = self.snapshot()["sessions"]
         self.sessions = sessions

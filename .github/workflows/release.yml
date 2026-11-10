@@ -61,6 +61,14 @@ jobs:
           if (Test-Path $out) { Get-Content $out } else { Write-Host "Trimmer.exe wrote no report" }
           if ($p.ExitCode -ne 0) { throw "Trimmer.exe can't load Qt's video player (exit code $($p.ExitCode), details above)" }
 
+      - name: Check the built app's update file loads
+        shell: pwsh
+        run: |
+          $out = Join-Path $PWD "updater-check.txt"
+          $p = Start-Process dist\Trimmer\Trimmer.exe -ArgumentList "--check-updater", "`"$out`"" -Wait -PassThru
+          if (Test-Path $out) { Get-Content $out } else { Write-Host "Trimmer.exe wrote no report" }
+          if ($p.ExitCode -ne 0) { throw "The update file can't load in the built app (exit code $($p.ExitCode), details above)" }
+
       - name: Checksums and release notes
         shell: pwsh
         run: |

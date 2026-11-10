@@ -408,12 +408,27 @@ def test_cancel_leaves_no_partial(work):
     assert list(out.iterdir()) == []
 
 
+NETWORK = re.compile(r"\b(import socket|from socket|urllib|http\.client|requests|QtNetwork|"
+                     r"QNetwork|websocket|telemetry|ftplib|smtplib)\b")
+
+
 def test_no_network_code():
-    banned = re.compile(r"\b(import socket|from socket|urllib|http\.client|requests|QtNetwork|"
-                        r"QNetwork|websocket|telemetry)\b")
+    """Only the optional update file (updater/trimmer_update.py) may use the network."""
     for f in [*(ROOT / "trimmer").rglob("*.py"), ROOT / "trimmer.py", ROOT / "Trimmer.pyw"]:
         text = f.read_text(encoding="utf-8")
-        assert not banned.search(text), f"network-related code in {f}"
+        assert not NETWORK.search(text), f"network-related code in {f}"
+    assert sorted(p.name for p in (ROOT / "updater").iterdir() if p.suffix == ".py") == ["trimmer_update.py"]
+
+
+def test_update_file_only_downloads_trimmer_releases():
+    """The update file can't see clips or settings, and only fetches from Trimmer's GitHub releases."""
+    text = (ROOT / "updater" / "trimmer_update.py").read_text(encoding="utf-8")
+    imports = set(re.findall(r"^\s*(?:import|from)\s+([\w.]+)", text, re.M))
+    assert imports <= {"json", "urllib.request", "os"}, imports          # nothing from Trimmer itself
+    assert not re.search(r"\b(upload|POST|data=|settings|app_data|clips?\b)", text.split('"""', 2)[2]), \
+        "the update file only downloads"
+    urls = set(re.findall(r'"(https?://[^"{]*)', text)) | set(re.findall(r"f\"(https?://[^\"]*)", text))
+    assert all(u.startswith(("https://api.github.com/repos/", "https://github.com/")) for u in urls), urls
 
 
 def test_copy_cut_out_middle_keeps_sync(work):

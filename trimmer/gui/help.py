@@ -5,8 +5,9 @@ from PySide6.QtWidgets import QDialog, QDialogButtonBox, QTextBrowser, QVBoxLayo
 GETTING_STARTED = """
 <h2>Getting started</h2>
 <p>Trimmer never changes your original files: every result is saved as a new file, checked, and only
-then can the original be deleted (if you ask for that). Nothing is sent anywhere; ffmpeg on your own PC
-does all the work.</p>
+then can the original be deleted (if you ask for that). Your clips never leave your PC; ffmpeg on your own
+PC does all the work. The only thing that ever connects is the optional update check, which only asks
+GitHub for the latest version (Settings &gt; Updates).</p>
 
 <h3>1. Trim a clip</h3>
 <ol>

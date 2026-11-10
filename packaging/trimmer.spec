@@ -22,7 +22,12 @@ a = Analysis(
     pathex=[str(ROOT)],
     datas=[
         (str(ROOT / "trimmer" / "gui" / "assets"), "trimmer/gui/assets"),
+        # The optional update check, kept as a plain file beside the app (not inside it) so the
+        # installer's "Local features only" can leave it out entirely. See core/updates.py.
+        (str(ROOT / "updater" / "trimmer_update.py"), "updater"),
     ] + licences,
+    # What the update file uses. PyInstaller can't see its imports, as it isn't part of the app.
+    hiddenimports=["urllib.request", "http.client", "ssl", "json"],
     # Qt parts Trimmer never uses, left out to keep the download small. (Not QtNetwork:
     # QtMultimedia imports it, and without it the preview has no sound.)
     excludes=["tkinter", "pytest", "tests", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",

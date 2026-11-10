@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDateEdit, QDialog
 from .. import APP_NAME, AUTHOR, AUTHOR_URL, COPYRIGHT, LICENSE_NAME, __version__
 from ..core import ffmpeg as ff
 from ..core import savings
+from ..core import updates as U
 from ..core.encode import EncodeSettings
 from ..core.render import AUDIO_RIP_FORMATS
 from ..core.settings import AppSettings, default_presets
@@ -103,7 +104,8 @@ class SettingsDialog(QDialog):
         tabs.tabBar().setDrawBase(False)     # no stray line above the tabs, as in the main window
         lay.addWidget(tabs)
         pages = [(self._files(), "Files"), (self._compression(), "Compression"), (self._merge(), "Replay merge"),
-                 (self._queue(), "Queue"), (self._app(), "App"), (self._about(), "About")]
+                 (self._queue(), "Queue"), (self._app(), "App"), (self._updates(), "Updates"),
+                 (self._about(), "About")]
         if not _defaults:
             self._add_resets([page for page, _ in pages])
         for page, title in pages:
@@ -134,6 +136,9 @@ class SettingsDialog(QDialog):
         self.warn_done = QCheckBox("Warn when a file looks already trimmed, compressed or merged by Trimmer")
         self.warn_done.setChecked(s.warn_already_processed)
         f.addRow("", self.warn_done)
+        self.warn_sort = QCheckBox("Warn that sorting the queue changes the order jobs run in")
+        self.warn_sort.setChecked(s.warn_queue_sort)
+        f.addRow("", self.warn_sort)
         self.game_pause = QCheckBox("Pause the queue while a game is full screen (or borderless), "
                                     "and carry on when you leave it")
         self.game_pause.setChecked(s.game_pause)
@@ -159,6 +164,41 @@ class SettingsDialog(QDialog):
         f.addRow("", hbox(self.sounds, b_hear, stretch_end=False))
         if not IS_WINDOWS:
             f.addRow("", label("Game detection and the global key work on Windows only.", "muted"))
+        return w
+
+    # ------------------------------------------------------------- updates
+    def _updates(self):
+        s = self.s
+        w, f = _form_page()
+        self.has_updater = U.available()
+        if not self.has_updater:
+            f.addRow("", label("Installed with local features only. This copy of Trimmer has no code that "
+                               "connects to the internet, so it never checks for updates.", wrap=True))
+            f.addRow("", label("To get update checks, run the installer again and choose \"Allow update "
+                               "checks\". To update by hand, download the new installer from GitHub.",
+                               "muted", wrap=True))
+            link = label(f'<a href="{U.RELEASES_PAGE}">Open the Releases page</a>')
+            link.setOpenExternalLinks(True)          # opens in your browser; Trimmer itself stays offline
+            f.addRow("", link)
+            return w
+        asked_by_installer = s.update_checks == "ask" and U.install_kind() == "installed"
+        self.update_on = QCheckBox("Check for updates when Trimmer opens")
+        self.update_on.setChecked(s.update_checks == "on" or asked_by_installer)
+        self._update_initial = self.update_on.isChecked()
+        f.addRow("", self.update_on)
+        f.addRow("", label("Trimmer only asks GitHub for the latest release, like opening the Releases page "
+                           "in a browser. Nothing about you, your clips or your settings is sent. With this "
+                           "off, Trimmer never connects to the internet.", "muted", wrap=True))
+        self.b_check_now = QPushButton("Check now")
+        updater = getattr(self.parent(), "updater", None)
+        self.b_check_now.setEnabled(updater is not None)
+        self.last_check = QLabel(f"Last checked {s.last_update_check}" if s.last_update_check else "Never checked")
+        if updater is not None:
+            self.b_check_now.clicked.connect(lambda: updater.check(manual=True))
+            updater.checked.connect(self.last_check.setText)
+        f.addRow("", hbox(self.b_check_now, self.last_check, stretch_end=True))
+        if s.skipped_version:
+            f.addRow("", label(f"Skipped version: {s.skipped_version} (Check now still shows it)", "muted"))
         return w
 
     # --------------------------------------------------------------- about
@@ -537,6 +577,7 @@ class SettingsDialog(QDialog):
         s.add_quality_label = self.qlabel.isChecked()
         s.warn_duplicate_jobs = self.warn_dup.isChecked()
         s.warn_already_processed = self.warn_done.isChecked()
+        s.warn_queue_sort = self.warn_sort.isChecked()
         s.container = self.container.currentData()
         s.exact_cuts = self.exact.isChecked()
         s.smart_cut = self.smart.isChecked()
@@ -565,6 +606,8 @@ class SettingsDialog(QDialog):
         s.game_pause_ignore = "" if ignore in ("", DEFAULT_IGNORE) else ignore
         s.pause_hotkey = self.hotkey_edit.keySequence().toString(QKeySequence.PortableText)
         s.pause_sounds = self.sounds.isChecked()
+        if self.has_updater and not (s.update_checks == "ask" and self.update_on.isChecked() == self._update_initial):
+            s.update_checks = "on" if self.update_on.isChecked() else "off"   # untouched first-launch "ask" stays
         s.save()
         self.accept()
 

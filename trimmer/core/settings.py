@@ -79,6 +79,11 @@ class AppSettings:
     on_close: str = "ask"                 # ask | save | discard what is open when closing
     auto_delete_logs: bool = True         # delete old run logs and crash reports when Trimmer starts
     keep_logs_days: int = 30              # ... once they are older than this
+    # Updates (the only network use, and only when the user says yes; see trimmer/core/updates.py)
+    update_checks: str = "ask"            # ask (not asked yet) | on | off
+    skipped_version: str = ""             # "Skip this version": no popup for this release
+    last_update_check: str = ""           # when it last checked, as shown in Settings
+    warn_queue_sort: bool = True          # say that sorting the queue changes the order jobs run in
     ui: dict = field(default_factory=dict)
 
     @classmethod
@@ -128,6 +133,8 @@ class AppSettings:
             s.conflict_policy = "ask"
         if s.on_close not in ("ask", "save", "discard"):
             s.on_close = "ask"
+        if s.update_checks not in ("ask", "on", "off"):
+            s.update_checks = "ask"
         return s
 
     def _import_old_merge_settings(self):

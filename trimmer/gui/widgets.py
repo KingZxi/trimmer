@@ -1,18 +1,19 @@
 """Reusable widgets: the trim timeline, the compression settings form and
 the dark theme."""
 
+import re
 import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QUrl, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QUrl, Signal
 from PySide6.QtGui import (QColor, QDesktopServices, QFont, QIcon, QImage, QKeySequence, QPainter, QPainterPath,
                            QPen, QShortcut)
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QHBoxLayout,
-                               QLabel, QMenu, QMessageBox, QSlider, QSpinBox, QTableWidget, QToolButton, QTreeWidget,
-                               QVBoxLayout, QWidget)
+                               QLabel, QMenu, QMessageBox, QSlider, QSpinBox, QStyle, QStyleOptionSlider,
+                               QTableWidget, QToolButton, QTreeWidget, QVBoxLayout, QWidget)
 
 from ..core.encode import CODECS, ENCODERS, VALID_PRESETS, EncodeSettings, give_up_target
 from ..core.util import format_hms_ms
@@ -93,6 +94,67 @@ class _Hint:
             p.setPen(colour("faint"))
             p.drawText(r.adjusted(20, 34, -20, 0), Qt.AlignCenter | Qt.TextWordWrap, self.sub_hint)
         p.end()
+
+
+class HeaderSort(QObject):
+    """Click a column header to sort a list by it (click again to reverse). The tab does the sorting
+    itself, through on_sort(column, descending), because its rows stand for items in its own list;
+    on_sort returns False to cancel. Sortable headers get the hand cursor, except over the edges
+    that resize a column."""
+
+    def __init__(self, view, columns, on_sort, tip="Click to sort by this column"):
+        super().__init__(view)
+        self.header = view.header() if isinstance(view, QTreeWidget) else view.horizontalHeader()
+        self.columns = set(columns)
+        self.on_sort = on_sort
+        self.column, self.ascending = None, True
+        self.header.setSectionsClickable(True)
+        self.header.setSortIndicatorShown(False)
+        self.header.sectionClicked.connect(self._clicked)
+        self.header.viewport().setMouseTracking(True)
+        self.header.viewport().installEventFilter(self)
+        if isinstance(view, QTreeWidget):
+            head = view.headerItem()
+            for c in self.columns:
+                head.setToolTip(c, "\n".join(t for t in (head.toolTip(c), tip) if t))
+        else:
+            for c in self.columns:
+                item = view.horizontalHeaderItem(c)
+                if item is not None:
+                    item.setToolTip("\n".join(t for t in (item.toolTip(), tip) if t))
+
+    def _clicked(self, col):
+        if col not in self.columns:
+            return
+        ascending = not (self.column == col and self.ascending)
+        if self.on_sort(col, not ascending) is False:
+            return
+        self.column, self.ascending = col, ascending
+        self.header.setSortIndicator(col, Qt.AscendingOrder if ascending else Qt.DescendingOrder)
+        self.header.setSortIndicatorShown(True)
+
+    def clear(self):
+        """The list changed order another way (rows added, moved by hand): no arrow any more."""
+        self.column = None
+        self.header.setSortIndicatorShown(False)
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.MouseMove and not ev.buttons():
+            x = int(ev.position().x())
+            h = self.header
+            edge = h.logicalIndexAt(x - 5) != h.logicalIndexAt(x + 5)
+            if not edge and h.logicalIndexAt(x) in self.columns:
+                obj.setCursor(Qt.PointingHandCursor)
+            else:
+                obj.unsetCursor()        # the header's own resize cursor shows on the edges
+        elif ev.type() == QEvent.Leave:
+            obj.unsetCursor()
+        return False
+
+
+def sort_text(text: str):
+    """A sort key that puts "Clip 2" before "Clip 10"."""
+    return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", (text or "").lower())]
 
 
 class HintTable(_Hint, QTableWidget):
@@ -515,7 +577,59 @@ AUDIO = [("Copy original (no loss)", "copy"), ("AAC 96 kbps", "96"), ("AAC 128 k
 HEIGHTS = [("Keep", 0), ("2160p", 2160), ("1440p", 1440), ("1080p", 1080), ("720p", 720), ("480p", 480)]
 FPS = [("Keep", 0), ("60 fps", 60), ("30 fps", 30)]
 AUTO3_TARGETS = [("95: very hard to tell apart (bigger)", 95.0), ("93: balanced (default)", 93.0),
-                 ("90: smaller, small visible loss", 90.0)]
+                 ("90: smaller, small visible loss", 90.0)]      # the recommended marks on the slider
+AUTO3_RANGE = (80, 99)                   # what the engine accepts (EncodeSettings.validate)
+
+
+def auto3_words(v: int) -> str:
+    """What an Auto 3 target means, for the text beside the slider."""
+    for label_text, mark in AUTO3_TARGETS:
+        if v == mark:
+            return label_text.split(": ", 1)[1]
+    if v > 95:
+        return "even closer to the original (bigger)"
+    if v > 90:
+        return "between balanced and smaller"
+    if v >= 85:
+        return "smaller, visible loss"
+    return "smallest, clearly visible loss"
+
+
+class SliderMarks(QWidget):
+    """Labelled marks under a horizontal slider (its recommended values), lined up with its handle."""
+
+    def __init__(self, slider: QSlider, marks, parent=None):
+        super().__init__(parent)
+        self.slider = slider
+        self.marks = list(marks)
+        self.setFixedHeight(16)
+        slider.valueChanged.connect(self.update)
+
+    def mark_x(self, v) -> float:
+        opt = QStyleOptionSlider()
+        self.slider.initStyleOption(opt)
+        st = self.slider.style()
+        groove = st.subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self.slider)
+        handle = st.subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self.slider)
+        span = groove.width() - handle.width()
+        x = groove.x() + handle.width() / 2 + QStyle.sliderPositionFromValue(
+            self.slider.minimum(), self.slider.maximum(), int(v), span)
+        return x + self.slider.x() - self.x()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        f = p.font()
+        f.setPointSizeF(max(7.5, f.pointSizeF() - 1.5))
+        p.setFont(f)
+        for v in self.marks:
+            x = self.mark_x(v)
+            on = v == self.slider.value()
+            p.setPen(QPen(colour("accent" if on else "faint"), 1.4))
+            p.drawLine(QPointF(x, 0), QPointF(x, 4))
+            p.setPen(colour("text" if on else "muted"))
+            p.drawText(QRectF(x - 14, 3, 28, 13), Qt.AlignHCenter | Qt.AlignTop, f"{v:g}")
+        p.end()
 
 
 class EncodeForm(QWidget):
@@ -572,13 +686,26 @@ class EncodeForm(QWidget):
         f.addRow("Codec", self.codec)
         f.addRow("Encoder", self.encoder)
         f.addRow("CRF / quality", self.crf)
-        self.auto3_target = QComboBox()
-        for label, v in AUTO3_TARGETS:
-            self.auto3_target.addItem(label, v)
-        self.auto3_target.setCurrentIndex(1)
+        self.auto3_target = QSlider(Qt.Horizontal)
+        self.auto3_target.setRange(*AUTO3_RANGE)
+        self.auto3_target.setValue(93)
+        self.auto3_target.setPageStep(1)
         self.auto3_target.setToolTip("How close to the original auto3 keeps each clip, as a VMAF score out of 100.\n"
-                                     "It picks the smallest file that still scores at least this.")
-        f.addRow("Quality target", self.auto3_target)
+                                     "It picks the smallest file that still scores at least this.\n"
+                                     "The marks are the recommended values: 95 very hard to tell apart, 93 balanced\n"
+                                     "(default), 90 smaller with a small visible loss. Lower makes smaller files\n"
+                                     "with more visible loss.")
+        self.auto3_text = QLabel()
+        self.auto3_text.setMinimumWidth(230)
+        slider_col = QWidget()
+        col = QVBoxLayout(slider_col)
+        col.setContentsMargins(0, 4, 0, 0)
+        col.setSpacing(0)
+        col.addWidget(self.auto3_target)
+        self.auto3_marks = SliderMarks(self.auto3_target, [v for _, v in AUTO3_TARGETS])
+        col.addWidget(self.auto3_marks)
+        self.auto3_row = hbox(slider_col, self.auto3_text, stretch_end=False)
+        f.addRow("Quality target", self.auto3_row)
         self.give_up = QSlider(Qt.Horizontal)
         self.give_up.setRange(0, 100)
         self.give_up.setValue(32)
@@ -601,10 +728,9 @@ class EncodeForm(QWidget):
         f.addRow("", self.ten_bit)
         f.addRow("", self.revert)
         self.form = f
-        for w in (self.mode, self.codec, self.encoder, self.preset, self.audio, self.height_cap, self.fps_cap,
-                  self.auto3_target):
+        for w in (self.mode, self.codec, self.encoder, self.preset, self.audio, self.height_cap, self.fps_cap):
             w.currentIndexChanged.connect(self._update)
-        for w in (self.crf, self.target, self.gop, self.give_up):
+        for w in (self.crf, self.target, self.gop, self.give_up, self.auto3_target):
             w.valueChanged.connect(self._update)
         self.revert.toggled.connect(self._update)
         self.ten_bit.toggled.connect(self._update)
@@ -624,7 +750,8 @@ class EncodeForm(QWidget):
     def _update(self):
         mode = self.mode.currentData()
         self.form.setRowVisible(self.crf, mode == "crf")
-        self.form.setRowVisible(self.auto3_target, mode == "auto3")
+        self.form.setRowVisible(self.auto3_row, mode == "auto3")
+        self.auto3_text.setText(f"{self.auto3_target.value()}: {auto3_words(self.auto3_target.value())}")
         self.form.setRowVisible(self.give_up_row, mode == "autoset")
         self.give_up_text.setText(f"{self.give_up.value()}  (VMAF {give_up_target(self.give_up.value()):g})")
         self.codec.setEnabled(mode != "autoset")
@@ -645,7 +772,7 @@ class EncodeForm(QWidget):
             preset=self.preset.currentText(), target_size_mb=self.target.value(),
             audio=self.audio.currentData(), max_height=self.height_cap.currentData(),
             max_fps=self.fps_cap.currentData(), keyframe_interval=self.gop.value(),
-            auto3_target=self.auto3_target.currentData(), revert_if_larger=self.revert.isChecked(),
+            auto3_target=float(self.auto3_target.value()), revert_if_larger=self.revert.isChecked(),
             ten_bit=self.ten_bit.isChecked(), give_up=self.give_up.value())
         return s.validate()
 
@@ -662,9 +789,7 @@ class EncodeForm(QWidget):
         self.height_cap.setCurrentIndex(max(0, self.height_cap.findData(s.max_height)))
         self.fps_cap.setCurrentIndex(max(0, self.fps_cap.findData(int(s.max_fps))))
         self.gop.setValue(s.keyframe_interval)
-        # Nearest offered target (a hand-edited settings file may hold another number).
-        near = min(range(len(AUTO3_TARGETS)), key=lambda i: abs(AUTO3_TARGETS[i][1] - s.auto3_target))
-        self.auto3_target.setCurrentIndex(near)
+        self.auto3_target.setValue(round(s.auto3_target))   # a hand-edited file may hold 93.5
         self.revert.setChecked(s.revert_if_larger)
         self.ten_bit.setChecked(s.ten_bit)
         self.give_up.setValue(s.give_up)

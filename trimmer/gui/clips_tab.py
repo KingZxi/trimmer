@@ -20,8 +20,9 @@ from ..core.util import format_hms, format_hms_ms, format_size, same_file, sanit
 from .queue_checks import check_new_jobs
 from .audio_device import follow_default_output
 from .theme import set_kind
-from .widgets import (OWN_TIP, STAR, EncodeForm, FullScreen, HintTable, OptionBinding, OwnOptions, Timeline,
-                      TrackPicker, card, clean_opts, clearable, copy_opts, hbox, label, show_in_folder)
+from .widgets import (OWN_TIP, STAR, EncodeForm, FullScreen, HeaderSort, HintTable, OptionBinding, OwnOptions,
+                      Timeline, TrackPicker, card, clean_opts, clearable, copy_opts, hbox, label, show_in_folder,
+                      sort_text)
 
 # Qt's player, or the silent frame fallback when Windows blocks its DLLs
 from .playback import (HAVE_PLAYBACK, NO_SOUND, NO_SOUND_TIP, PLAYBACK_ERROR, QAudioOutput, QMediaPlayer,
@@ -136,9 +137,10 @@ class ClipsTab(OwnOptions, QWidget):
         hdr.setHighlightSections(False)
         self.table.setTextElideMode(Qt.ElideMiddle)
         self.table.setWordWrap(False)
-        for c, w in enumerate((200, 58, 70, 130, 120, 96)):
+        for c, w in enumerate((200, 78, 84, 130, 120, 96)):     # room for the sort arrow
             self.table.setColumnWidth(c, w)
         self.table.itemSelectionChanged.connect(self._selection_changed)
+        self.sorter = HeaderSort(self.table, range(len(COLS)), self.sort_by)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._menu)
         ll.addWidget(self.table, 1)
@@ -531,7 +533,40 @@ class ClipsTab(OwnOptions, QWidget):
         if isinstance(part, list) and len(part) == 2 and all(isinstance(x, int) for x in part):
             e.part = tuple(part)
 
+    def sort_by(self, col, descending=False):
+        """Reorder the clips by a column (the list's order is the clips', so it's sorted, then redrawn)."""
+        notes = len(COLS) - 1
+        shown = {id(e): (self.table.item(r, notes).text() if self.table.item(r, notes) else "")
+                 for r, e in enumerate(self.entries)}
+        keys = {0: lambda e: (sort_text(e.path.name), e.part or (0, 0)),
+                1: lambda e: e.info.duration or 0, 2: lambda e: e.info.size or 0,
+                3: lambda e: (e.info.has_video, e.info.height or 0, e.info.fps or 0),
+                4: lambda e: len(e.info.audio), 5: lambda e: (bool(e.segments), self._kept(e) or 0),
+                notes: lambda e: sort_text(shown[id(e)])}
+        if col not in keys or len(self.entries) < 2:
+            return len(self.entries) > 0
+        picked = self.selected_entries()
+        order = sorted(self.entries, key=keys[col], reverse=descending)
+        self.entries[:] = order
+        self.table.blockSignals(True)
+        self.table.selectionModel().blockSignals(True)
+        try:
+            self.table.clearSelection()
+            for r, e in enumerate(self.entries):
+                self._fill_row(r, e)
+            mode = self.table.selectionMode()
+            self.table.setSelectionMode(QAbstractItemView.MultiSelection)
+            for e in picked:
+                self.table.selectRow(self.entries.index(e))
+            self.table.setSelectionMode(mode)
+        finally:
+            self.table.selectionModel().blockSignals(False)
+            self.table.blockSignals(False)
+        self.table.viewport().update()
+        return True
+
     def _add_row(self, e: ClipEntry):
+        self.sorter.clear()               # new clips go at the end, so the list isn't sorted any more
         r = self.table.rowCount()
         self.table.insertRow(r)
         self._fill_row(r, e)

@@ -25,6 +25,7 @@ from .queue_tab import QueueTab
 from .help import GETTING_STARTED, SHORTCUTS, HelpDialog
 from .settings_dialog import SettingsDialog, TipsDialog
 from .system_hooks import QueueGuard
+from .updates import Updater, open_releases_page
 from .widgets import apply_theme, label
 from .worker import Task
 
@@ -67,6 +68,7 @@ class MainWindow(QMainWindow):
         self.encoders = ["software"]
         self.track_prefs = {}           # default preview track, for this run only
         self.tasks = []
+        self.updater = Updater(self)    # does nothing unless the user said yes to update checks
         ff.set_ffmpeg_dir(self.settings.ffmpeg_dir or None)
         self.setWindowTitle("Trimmer")
         self.resize(1280, 820)
@@ -145,6 +147,10 @@ class MainWindow(QMainWindow):
                                                                       (560, 640)).exec())
         help_menu.addAction("OBS settings tips", lambda: TipsDialog(self).exec())
         help_menu.addSeparator()
+        if self.updater.available():
+            help_menu.addAction("Check for updates", lambda: self.updater.check(manual=True))
+        else:                                  # local features only: the browser fetches it, not Trimmer
+            help_menu.addAction("Get the latest version", open_releases_page)
         help_menu.addAction("About Trimmer", lambda: self.open_settings(tab="About"))
         b_help = QToolButton()
         b_help.setText("Help")

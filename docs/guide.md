@@ -14,8 +14,11 @@ Drop in one clip or hundreds, either as files or whole folders. For each clip yo
   shout is easy to spot (turn off in Settings → App).
 - **Choose audio tracks**: keep any of them, or mix them into one track so
   phones and Discord can hear everything. The separate tracks can be kept too.
-- **Compress** with a preset or your own settings: CRF, auto2, auto3, auto
-  settings (picks the codec and CRF per clip),
+- **Sort the list**: click a column header (Name, Length, Size, ...) to sort
+  the clips by it, and click again to reverse.
+- **Compress** with a preset or your own settings: CRF, auto2, auto3 (its
+  quality target slider goes from 80 to 99, with marks at the recommended 90,
+  93 and 95), auto settings (picks the codec and CRF per clip),
   target file size, lossless, H.264/H.265/AV1, NVENC/QSV/AMF when your GPU
   supports it, optional 10-bit colour for H.265/AV1, and a resolution or frame
   rate cap.
@@ -63,6 +66,9 @@ match, Trimmer re-encodes the whole trim instead and says so in the log.
 
 Don't use the Replay Buffer? Untick Settings > Replay merge > "Show the
 Replay merge tab" to hide it.
+
+Click a column header to sort the sessions by time, number of clips, length
+or name; click it again to reverse. Each session's clips stay in time order.
 
 Drop in your Replay Buffer clips. Clips that overlap in time are grouped into
 sessions and drawn on a timeline, and clips that are fully covered by their
@@ -113,6 +119,12 @@ lossless cut would repeat more than half a second.
 
 Jobs run one at a time, top to bottom.
 
+- Click a column header (Job, Saves to, Settings, Details, Size) to sort the
+  waiting jobs by it. Because the list is the run order, this changes the
+  order they run in, so Trimmer asks first (turn that off with "Don't ask
+  again", or back on in Settings → Queue). The running job and finished ones
+  stay where they are.
+
 - **Pause** freezes the running job exactly where it is, and **Resume**
   carries on from that point. **Pause after this job** lets the current job
   finish first. Quitting while paused cancels the job cleanly.
@@ -157,3 +169,20 @@ Processing a file again adds to it. Before queueing, Trimmer warns when a job
 is already in the queue (or finished), or when a file looks already trimmed,
 compressed or merged (by that note, or by Trimmer's name tags). Both warnings
 can be turned off in Settings → Queue.
+
+## Updates
+
+Trimmer can check GitHub for new versions when it opens, but only if you say
+yes. The installer asks (**Allow update checks** or **Local features only**),
+and the portable zip asks the first time it opens.
+
+- When a new version is out, a popup shows what's new, with **Install
+  update**, **Skip this version** and **Don't ask again**. You can also check
+  any time in Settings → Updates (or Help → Check for updates).
+- Install update downloads the installer, checks it against the release's
+  `SHA256SUMS.txt`, installs it and reopens Trimmer. If the queue is running,
+  it waits until the queue finishes. The portable zip opens the release page
+  instead.
+- The check only asks GitHub for the latest release. Nothing about you, your
+  clips or your settings is sent. With "Local features only" the update code
+  isn't installed at all; run the installer again to change your mind.

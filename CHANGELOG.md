@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.3.0 (not released yet)
+
+From testers' feedback.
+
+- New: an optional update check. Trimmer can ask GitHub for new versions when it opens, but only if
+  you say yes: the installer asks (Allow update checks, or Local features only), and the portable
+  zip asks the first time it opens. A new version brings up its release notes with Install update,
+  Skip this version and Don't ask again; Settings > Updates and Help > Check for updates check any
+  time. Install update downloads the installer, checks it against the release's SHA256SUMS.txt,
+  installs it and reopens Trimmer, waiting for the queue to finish first if it's running.
+  Nothing about you, your clips or your settings is sent, and with Local features only the update
+  code isn't installed at all, so Trimmer has nothing that can connect to the internet.
+- New: click a column header to sort a list by it (click again to reverse): clips in Clips, sessions
+  in Replay merge, and waiting jobs in the Queue. Sorting the queue changes the order jobs run in, so
+  Trimmer asks first (Don't ask again turns that off; Settings > Queue turns it back on). The running
+  job and finished ones stay where they are.
+- New: Auto 3's quality target is a slider from 80 to 99 instead of three choices, so it can go
+  lower than 90 for smaller files. Marks under it show the recommended 90, 93 (default) and 95, and
+  the text beside it says what the number means.
+- New: the hand cursor over buttons, check boxes, drop-downs, tabs, sliders and sortable column
+  headers, so it's clear they can be pressed. Disabled ones keep the arrow.
+- New: thin dividers between columns in the Clips, Replay merge and Queue lists and their headers.
+
 ## 1.2.0 (2026-11-06)
 
 First release on GitHub, with a Windows installer and a portable zip.

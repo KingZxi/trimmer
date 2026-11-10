@@ -1493,7 +1493,7 @@ def test_help_menu_and_tidier_layout(monkeypatch):
     w = window(WORK / "out_help")
     b_help = next(b for b in w.findChildren(QToolButton) if b.text() == "Help")
     names = [a.text() for a in b_help.menu().actions() if a.text()]
-    assert names == ["Getting started", "Keyboard shortcuts", "OBS settings tips", "About Trimmer"]
+    assert names == ["Getting started", "Keyboard shortcuts", "OBS settings tips", "Check for updates", "About Trimmer"]
     shown = []
     monkeypatch.setattr(help_mod.HelpDialog, "exec", lambda d: shown.append(d.windowTitle()))
     next(a for a in w.actions() if a.shortcut().toString() == "F1").trigger()

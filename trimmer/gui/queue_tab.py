@@ -24,13 +24,16 @@ from ..core.journal import save_queue
 from ..core.util import format_hms, format_size, logs_dir, sanitize_filename
 from .clips_tab import CustomEncodeDialog
 from .theme import set_kind
-from .widgets import HintTable, hbox, label, show_in_folder
+from .widgets import HeaderSort, HintTable, hbox, label, show_in_folder, sort_text
 from .worker import QueueItem, QueueRunner, Task
 
 STATUS_TEXT = {"queued": "Waiting", "running": "Working", "done": "Done", "reverted": "Kept original",
                "failed": "Failed", "skipped": "Skipped", "cancelled": "Cancelled"}
 COLS = ["Job", "Saves to", "Settings", "Status", "Progress", "Details", "Size", "Delete original"]
 C_NAME, C_DEST, C_SET, C_STATUS, C_BAR, C_DETAIL, C_SIZE, C_DEL = range(len(COLS))
+SORTABLE = (C_NAME, C_DEST, C_SET, C_DETAIL, C_SIZE)
+SORT_WARNING = ("Sorting changes the order the jobs run in. Only waiting jobs move; the one that's working "
+                "and finished ones stay where they are.")
 WHEN_DONE = [("Do nothing", "nothing"), ("Open the output folder", "open"), ("Put the PC to sleep", "sleep")]
 
 
@@ -128,6 +131,8 @@ class QueueTab(QWidget):
                      (C_SIZE, 230), (C_DEL, 110)):
             self.table.setColumnWidth(c, w)
         self.table.itemSelectionChanged.connect(self._selection)
+        self.sorter = HeaderSort(self.table, SORTABLE, self.sort_by,
+                                 tip="Click to sort the waiting jobs by this column (changes the order they run in)")
         split.addWidget(self.table)
         self._shown, self._shown_line = None, ""     # job in the details panel, its first line
         self.log = QPlainTextEdit()
@@ -215,6 +220,8 @@ class QueueTab(QWidget):
             self.table.insertRow(r)
             self._make_row(r, item)
             self._to_estimate.append(item)
+        if jobs:
+            self.sorter.clear()           # new jobs wait at the end
         self._persist()
         self._estimate_next()
         if start and self.auto_start.isChecked() and self._choosing() and not self.is_running():
@@ -229,6 +236,52 @@ class QueueTab(QWidget):
             self.status.emit(f"Added {len(jobs)} job(s) to the queue. Press Start on the Queue tab "
                              f"when you're ready.")
         self._buttons()
+
+    def confirm_sort(self) -> bool:
+        """The first time: say that sorting the queue changes the order jobs run in."""
+        if not self.main.settings.warn_queue_sort:
+            return True
+        box = QMessageBox(QMessageBox.Question, "Sort the queue?", SORT_WARNING + "\n\nSort anyway?", parent=self)
+        yes = box.addButton("Sort", QMessageBox.AcceptRole)
+        box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(yes)
+        again = QCheckBox("Don't ask again (turn it back on in Settings > Queue)")
+        box.setCheckBox(again)
+        box.exec()
+        if box.clickedButton() is not yes:
+            return False
+        if again.isChecked():
+            self.main.settings.warn_queue_sort = False
+            self.main.settings.save()
+        return True
+
+    def sort_by(self, col, descending=False):
+        """Sort the waiting jobs by a column. They're the run order, so this reorders the queue; the
+        running job and finished ones keep their places, and waiting jobs fill the places between."""
+        slots = [i for i, it in enumerate(self.items) if it.status == "queued"]
+        if len(slots) < 2:
+            if self.items:
+                self.status.emit("Nothing to sort: sorting only moves waiting jobs.")
+            return False
+        if not self.confirm_sort():
+            return False
+        keys = {C_NAME: lambda it: sort_text(it.job.title), C_DEST: lambda it: sort_text(self._dest(it)[0]),
+                C_SET: lambda it: sort_text(describe(it.job)),
+                C_DETAIL: lambda it: sort_text(self._detail_text(it)[0]),
+                C_SIZE: lambda it: (it.estimate is None, it.estimate or it.in_bytes or 0)}
+        waiting = [self.items[i] for i in slots]
+        if col == C_SIZE and descending:
+            waiting.sort(key=lambda it: it.estimate or it.in_bytes or 0, reverse=True)
+            waiting.sort(key=lambda it: it.estimate is None)          # unknown sizes last either way
+        else:
+            waiting.sort(key=keys[col], reverse=descending)
+        ids = {i.id for i in self._selected()}
+        for i, it in zip(slots, waiting):
+            self.items[i] = it
+        self._rebuild(ids)
+        self._persist()
+        self.jobs_changed.emit()
+        return True
 
     def _make_row(self, r, item):
         bar = QProgressBar()
@@ -806,6 +859,7 @@ class QueueTab(QWidget):
                 j = i + step
                 if self.items[i].id in ids and self.items[j].id not in ids:
                     self.items[i], self.items[j] = self.items[j], self.items[i]
+        self.sorter.clear()               # moved by hand
         self._rebuild(ids)
         self._persist()
 

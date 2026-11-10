@@ -7,10 +7,22 @@ the whole clip.
 
 ![Clips tab: thumbnails and waveform on the trim timeline](docs/clips.png)
 
-**Fully offline.** Trimmer never connects to the internet. It has no
-telemetry, no update checks and no online services. All the work is done by
-ffmpeg on your own PC. A test (`test_no_network_code`) fails if any
-networking code is ever added.
+**Offline and private.** All the work is done by ffmpeg on your own PC, and
+your clips never leave it. Trimmer has no telemetry and no online services.
+The one exception is an optional update check, and it only runs if you say
+yes:
+
+- It asks GitHub for the latest Trimmer release, the same as opening the
+  Releases page in a browser, and downloads the installer if you press
+  Install update. Nothing about you, your clips or your settings is sent.
+- The installer asks first: **Allow update checks** or **Local features
+  only**. Local features only leaves the update code out entirely, so that
+  copy of Trimmer has nothing that can connect to the internet. The portable
+  zip asks the first time it opens, and does nothing unless you say yes.
+- All of it is in one small file, `updater/trimmer_update.py`. Tests
+  (`test_no_network_code`, `test_update_file_only_downloads_trimmer_releases`)
+  fail if any other part of Trimmer uses the network, or if that file ever
+  does more than download Trimmer's own releases.
 
 ## Author
 

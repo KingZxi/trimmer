@@ -54,6 +54,10 @@ def main():
         # Build self test (see .github/workflows/release.yml): can Qt's video player load here?
         from trimmer.gui.playback import check
         sys.exit(check(sys.argv[2]))
+    if len(sys.argv) == 3 and sys.argv[1] == "--check-updater":
+        # Build self test: the update file is there and everything it imports was bundled (no connection).
+        from trimmer.core.updates import check_module
+        sys.exit(check_module(sys.argv[2]))
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -107,6 +111,7 @@ def main():
     if splash is not None:
         splash.finish(win)
     win.startup_checks()
+    win.updater.on_launch()                 # asks first, and does nothing unless the user said yes
     if len(sys.argv) > 1:
         win._route(sys.argv[1:])
     sys.exit(app.exec())

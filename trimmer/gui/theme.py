@@ -8,9 +8,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject
+from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtGui import QColor, QFont, QPalette
-from PySide6.QtWidgets import QAbstractSpinBox, QApplication, QStyleFactory
+from PySide6.QtWidgets import (QAbstractButton, QAbstractSpinBox, QApplication, QComboBox, QSlider, QStyleFactory,
+                               QTabBar)
 
 from ..core.util import app_data_dir
 
@@ -162,8 +163,9 @@ QTableView, QTreeView, QListView, QPlainTextEdit, QTextBrowser {{ background: {t
             border: 1px solid {t['border']}; border-radius: 10px; gridline-color: transparent;
             selection-background-color: {t['selection']}; selection-color: {t['text']};
             alternate-background-color: {t['surface']}; }}
-QTableView::item {{ padding: 0 8px; border: none; }}
-QTreeView::item {{ padding: 6px 4px; border: none; }}
+/* A thin divider between columns, in the header and down the list. */
+QTableView::item {{ padding: 0 8px; border: none; border-right: 1px solid {t['border']}; }}
+QTreeView::item {{ padding: 6px 4px; border: none; border-right: 1px solid {t['border']}; }}
 QTreeView::indicator, QTableView::indicator {{ width: 15px; height: 15px; border-radius: 5px;
             border: 1px solid {t['border_strong']}; background: {t['surface2']}; }}
 QTreeView::indicator:checked, QTableView::indicator:checked {{ background: {t['accent']};
@@ -174,7 +176,10 @@ QTableView::item:selected, QTreeView::item:selected, QListView::item:selected {{
 QTreeView::item:hover, QTableView::item:hover, QListView::item:hover {{ background: {t['hover']}; }}
 QHeaderView {{ background: transparent; border: none; }}
 QHeaderView::section {{ background: {t['surface']}; color: {t['muted']}; border: none;
-            border-bottom: 1px solid {t['border']}; padding: 8px 8px; font-weight: 600; }}
+            border-bottom: 1px solid {t['border']}; border-right: 1px solid {t['border']};
+            padding: 8px 8px; font-weight: 600; }}
+QHeaderView::section:last {{ border-right: none; }}
+QHeaderView::section:hover {{ color: {t['text']}; }}
 QTableCornerButton::section {{ background: {t['surface']}; border: none; }}
 QPlainTextEdit {{ padding: 8px; font-family: "Cascadia Mono", "Consolas", "JetBrains Mono", monospace;
             color: {t['muted']}; }}
@@ -274,6 +279,30 @@ class _SpinPadding(QObject):
 _spin_padding = _SpinPadding()
 
 
+class _HandCursor(QObject):
+    """A pointing hand over everything you can press (buttons, check boxes, drop-downs, tabs,
+    sliders), so it's clear they do something. Disabled ones keep the arrow, and widgets that
+    choose their own cursor keep it."""
+    KINDS = (QAbstractButton, QComboBox, QTabBar, QSlider)
+
+    def eventFilter(self, obj, event):
+        kind = event.type()
+        if kind in (QEvent.Polish, QEvent.EnabledChange) and isinstance(obj, self.KINDS):
+            ours = obj.property("_hand_cursor")
+            if obj.testAttribute(Qt.WA_SetCursor) and not ours:
+                return False              # a cursor of its own (e.g. the arrow on a line edit's clear button)
+            if obj.isEnabled():
+                obj.setCursor(Qt.PointingHandCursor)
+                obj.setProperty("_hand_cursor", True)
+            elif ours:
+                obj.unsetCursor()
+                obj.setProperty("_hand_cursor", False)
+        return False
+
+
+_hand_cursor = _HandCursor()
+
+
 def _apply(app: QApplication, theme: str):
     t = LIGHT if theme == "light" else DARK
     current.clear()
@@ -294,6 +323,8 @@ def _apply(app: QApplication, theme: str):
     app.setStyleSheet(stylesheet(t))
     app.removeEventFilter(_spin_padding)
     app.installEventFilter(_spin_padding)
+    app.removeEventFilter(_hand_cursor)
+    app.installEventFilter(_hand_cursor)
 
 
 def clear_icon_path() -> str:
