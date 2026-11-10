@@ -55,6 +55,20 @@ def check_module(report: str) -> int:
     return ok
 
 
+def download_folder() -> Path:
+    import tempfile
+    return Path(tempfile.gettempdir()) / "Trimmer-update"
+
+
+def clean_downloads():
+    """Remove installers left from an earlier Install update (they've done their job)."""
+    for f in download_folder().glob("*"):
+        try:
+            f.unlink()
+        except OSError:
+            pass
+
+
 def install_kind(exe: Path = None, frozen: bool = None) -> str:
     """"installed" (the installer put it there, so updates can install themselves), "portable"
     (the zip) or "source" (run with Python)."""
@@ -129,4 +143,7 @@ def should_check_on_launch(settings, kind: str = None, has_module: bool = None) 
 
 def installer_args() -> list:
     """Run the downloaded installer without its wizard, close Trimmer for it, and reopen Trimmer."""
-    return ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS", "/RELAUNCH=1"]
+    # /NORESTARTAPPLICATIONS: if Windows still had Trimmer open, the installer mustn't reopen it as well
+    # as /RELAUNCH doing so (two windows).
+    return ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS", "/NORESTARTAPPLICATIONS",
+            "/RELAUNCH=1"]

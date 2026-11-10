@@ -179,7 +179,6 @@ QHeaderView::section {{ background: {t['surface']}; color: {t['muted']}; border:
             border-bottom: 1px solid {t['border']}; border-right: 1px solid {t['border']};
             padding: 8px 8px; font-weight: 600; }}
 QHeaderView::section:last {{ border-right: none; }}
-QHeaderView::section:hover {{ color: {t['text']}; }}
 QTableCornerButton::section {{ background: {t['surface']}; border: none; }}
 QPlainTextEdit {{ padding: 8px; font-family: "Cascadia Mono", "Consolas", "JetBrains Mono", monospace;
             color: {t['muted']}; }}

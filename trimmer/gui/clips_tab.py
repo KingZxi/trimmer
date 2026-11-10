@@ -3,7 +3,7 @@
 import hashlib
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QItemSelectionModel, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFrame,
                                QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMenu, QMessageBox,
@@ -559,6 +559,8 @@ class ClipsTab(OwnOptions, QWidget):
             for e in picked:
                 self.table.selectRow(self.entries.index(e))
             self.table.setSelectionMode(mode)
+            if picked:                    # the arrow keys carry on from the selected clip
+                self.table.setCurrentCell(self.entries.index(picked[0]), 0, QItemSelectionModel.NoUpdate)
         finally:
             self.table.selectionModel().blockSignals(False)
             self.table.blockSignals(False)

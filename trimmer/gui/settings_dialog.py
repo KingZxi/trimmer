@@ -196,6 +196,7 @@ class SettingsDialog(QDialog):
         if updater is not None:
             self.b_check_now.clicked.connect(lambda: updater.check(manual=True))
             updater.checked.connect(self.last_check.setText)
+            updater.turned_off.connect(lambda: self.update_on.setChecked(False))   # Don't ask again
         f.addRow("", hbox(self.b_check_now, self.last_check, stretch_end=True))
         if s.skipped_version:
             f.addRow("", label(f"Skipped version: {s.skipped_version} (Check now still shows it)", "muted"))
@@ -395,9 +396,7 @@ class SettingsDialog(QDialog):
         # The custom compression settings: one button for the whole form.
         self.b_enc_default.clicked.connect(lambda: (self.enc.set_settings(EncodeSettings(**self._default_enc)),
                                                     self._enc_refresh()))
-        for w in self.enc.findChildren(QWidget):   # the form's own controls
-            if isinstance(w, CONTROLS):
-                _changed_signal(w).connect(self._enc_refresh)
+        self.enc.changed.connect(self._enc_refresh)   # every control, the sliders included
         self._enc_refresh()
 
     def _enc_refresh(self, *_):

@@ -451,7 +451,9 @@ def auto3_search(settings: EncodeSettings) -> Tuple[int, int, int]:
     (up to +12 at VMAF 87 and under), and one more encode keeps the search as fine."""
     off = _codec_offset(settings)
     extra = min(12, max(0, round((90.0 - settings.auto3_target) * 4)))
-    top = 63 if settings.codec == "av1" else 51
+    # Highest value the encoder takes: SVT-AV1's CRF runs to 63; x264, x265 and every hardware
+    # encoder's CQ/QP (AV1 included) to 51.
+    top = 63 if settings.codec == "av1" and settings.encoder == "software" else 51
     return 15 + off, min(top, 34 + off + extra), 4 if extra == 0 else 5
 
 

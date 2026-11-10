@@ -1,4 +1,4 @@
-"""Trimmer: trim, merge, compress and rip OBS clips, fully offline.
+"""Trimmer: trim, merge, compress and rip OBS clips, offline on your own PC.
 
 Run:  python trimmer.py  [files or folders to open]
 Or double-click Trimmer.pyw to start it without a console window.

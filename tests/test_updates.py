@@ -122,10 +122,12 @@ def test_update_file_reads_the_release(monkeypatch, tmp_path):
     url, method, data, headers = asked[0]
     assert method == "GET" and data is None                            # nothing is sent
     assert headers["User-agent"] == "Trimmer-update-check"            # no version, no user details
+    assert headers["Accept"] == "application/vnd.github+json"
     seen = []
     out = mod.download(rel["assets"]["Trimmer-1.3.0-setup.exe"], tmp_path / "s.exe",
                        progress=lambda d, n: seen.append((d, n)))
     assert out.read_bytes() == b"x" * 1000 and seen[-1] == (1000, 1000)
+    assert asked[1][3]["Accept"] == "application/octet-stream" and asked[1][1] == "GET" and asked[1][2] is None
     with pytest.raises(InterruptedError):
         mod.download(rel["assets"]["Trimmer-1.3.0-setup.exe"], tmp_path / "c.exe", cancelled=lambda: True)
     assert not (tmp_path / "c.exe").exists()                           # no half file left
@@ -307,3 +309,34 @@ def test_install_waits_for_the_queue(monkeypatch):
     w.queue.running_changed.emit(False)                            # the queue finished
     pump(5, lambda: ran)
     assert ran and fake.fetched == ["sums", "setup"]
+
+
+def test_dont_ask_again_while_settings_are_open(monkeypatch):
+    monkeypatch.setattr(GU.UpdateDialog, "exec", lambda self: setattr(self, "choice", "never") or 1)
+    w = window(monkeypatch, update_checks="on")
+    d = SettingsDialog(w.settings, ["software"], w)
+    assert d.update_on.isChecked()
+    w.updater._checked(release(), manual=True)                         # Check now, then Don't ask again
+    assert not d.update_on.isChecked()
+    d._save()                                                          # Save doesn't turn it back on
+    assert w.settings.update_checks == "off"
+    w.close()
+
+
+def test_old_downloads_are_cleaned_up(monkeypatch, tmp_path):
+    monkeypatch.setattr(U, "download_folder", lambda: tmp_path)
+    (tmp_path / "Trimmer-1.2.0-setup.exe").write_bytes(b"old")
+    monkeypatch.setattr(GU, "ask_permission", lambda parent: False)
+    monkeypatch.setattr(U, "install_kind", lambda *a, **k: "portable")
+    w = window(monkeypatch)
+    w.updater.on_launch()
+    assert not list(tmp_path.iterdir())
+    w.close()
+
+
+def test_installer_reopens_trimmer_once():
+    args = U.installer_args()
+    assert "/RELAUNCH=1" in args and "/NORESTARTAPPLICATIONS" in args and "/SILENT" in args
+    iss = (ROOT / "packaging" / "installer.iss").read_text(encoding="utf-8")
+    assert "{param:RELAUNCH|0}" in iss and 'Excludes: "\\_internal\\updater"' in iss
+    assert 'Tasks: updates' in iss and "Flags: exclusive unchecked" in iss

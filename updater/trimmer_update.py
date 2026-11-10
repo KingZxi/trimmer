@@ -28,8 +28,8 @@ MAX_FILE = 1024 * 1024 * 1024
 def _open(url, timeout):
     if not (url == API_LATEST or url.startswith(DOWNLOAD_PREFIX)):
         raise ValueError(f"not a Trimmer release address: {url}")
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
-                                               "Accept": "application/vnd.github+json"})
+    accept = "application/vnd.github+json" if url == API_LATEST else "application/octet-stream"
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": accept})
     return urllib.request.urlopen(req, timeout=timeout)
 
 

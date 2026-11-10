@@ -1110,5 +1110,7 @@ def test_auto3_search_reaches_higher_crfs_for_low_targets():
     assert s(93, "h265") == (20, 39, 4)
     assert s(88) == (15, 42, 5) and s(85) == s(80) == (15, 46, 5)
     assert s(80, "h265") == (20, 51, 5) and s(80, "av1") == (25, 56, 5)
+    for hw in ("nvenc", "qsv", "amf"):                         # hardware CQ/QP stops at 51, AV1 too
+        assert en.auto3_search(EncodeSettings(codec="av1", encoder=hw, quality="auto3", auto3_target=80))[1] == 51
     tops = [s(t)[1] for t in range(99, 79, -1)]
     assert tops == sorted(tops)                                # lower targets never search lower

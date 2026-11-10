@@ -4,10 +4,8 @@ windows and runs that module's functions in the background."""
 
 import subprocess
 import sys
-import tempfile
 import threading
 import time
-from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
@@ -18,6 +16,12 @@ from .. import __version__
 from ..core import updates as U
 from .theme import set_kind
 from .widgets import label
+
+
+SETTINGS_HINT = "You can check for updates any time in Settings > Updates."
+WHAT_IS_SENT = ("Trimmer only asks GitHub for the latest release, like opening the Releases page in a browser. "
+                "Nothing about you, your clips or your settings is sent.")
+LAUNCH_DELAY_MS = 4000
 
 
 class Background(QObject):
@@ -39,11 +43,6 @@ class Background(QObject):
             self.done.emit(self.fn())
         except Exception as e:                 # noqa: BLE001 (shown to the user, or ignored on launch)
             self.failed.emit(str(e) or type(e).__name__)
-
-SETTINGS_HINT = "You can check for updates any time in Settings > Updates."
-WHAT_IS_SENT = ("Trimmer only asks GitHub for the latest release, like opening the Releases page in a browser. "
-                "Nothing about you, your clips or your settings is sent.")
-LAUNCH_DELAY_MS = 4000
 
 
 def open_releases_page():
@@ -107,6 +106,7 @@ class Updater(QObject):
     """Owned by the main window. Nothing here runs unless the user has said yes to update checks
     (or pressed Check now)."""
     checked = Signal(str)          # a line for Settings: when it last checked, or what went wrong
+    turned_off = Signal()          # "Don't ask again" was pressed
 
     def __init__(self, window):
         super().__init__(window)
@@ -128,6 +128,7 @@ class Updater(QObject):
 
     # ---------------------------------------------------------------- launch
     def on_launch(self):
+        U.clean_downloads()                    # local files only: an installer an earlier update left
         what = U.should_check_on_launch(self.settings)
         if what == "check" and self.settings.update_checks == "ask":
             self.settings.update_checks = "on"          # said yes in the installer
@@ -187,6 +188,7 @@ class Updater(QObject):
         if d.choice == "never":
             self.settings.update_checks = "off"
             self.settings.save()
+            self.turned_off.emit()
         elif d.choice == "skip":
             self.settings.skipped_version = U.version_text(release["tag"])
             self.settings.save()
@@ -222,7 +224,7 @@ class Updater(QObject):
     def _download(self, release):
         mod = U.load_module()
         name = U.setup_asset(release)
-        folder = Path(tempfile.gettempdir()) / "Trimmer-update"
+        folder = U.download_folder()
         folder.mkdir(exist_ok=True)
         dest = folder / name
         self._cancel = False
@@ -231,6 +233,7 @@ class Updater(QObject):
         busy.setWindowModality(Qt.WindowModal)
         busy.setMinimumDuration(0)
         busy.canceled.connect(lambda: setattr(self, "_cancel", True))
+        busy.setValue(0)                       # on screen straight away
 
         def work():
             sums = folder / "SHA256SUMS.txt"
