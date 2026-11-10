@@ -1100,3 +1100,15 @@ def test_damaged_source_keeps_the_part_that_could_be_saved(work):
     assert len(kept) == 1, list(out.iterdir())
     assert 10 < ff.probe(kept[0], use_cache=False).duration < claimed - 1
     assert broken.exists() and not list(out.glob("*.part"))
+
+
+def test_auto3_search_reaches_higher_crfs_for_low_targets():
+    """Targets under 90 used to stop at the same CRF ceiling, so 85 and 80 made the same file."""
+    from trimmer.core import encode as en
+    s = lambda t, codec="h264": en.auto3_search(EncodeSettings(codec=codec, quality="auto3", auto3_target=t))  # noqa: E731
+    assert s(93) == s(90) == (15, 34, 4)                       # unchanged from 90 up
+    assert s(93, "h265") == (20, 39, 4)
+    assert s(88) == (15, 42, 5) and s(85) == s(80) == (15, 46, 5)
+    assert s(80, "h265") == (20, 51, 5) and s(80, "av1") == (25, 56, 5)
+    tops = [s(t)[1] for t in range(99, 79, -1)]
+    assert tops == sorted(tops)                                # lower targets never search lower

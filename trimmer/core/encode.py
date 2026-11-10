@@ -444,6 +444,17 @@ def ssim_target(vmaf_target: float) -> float:
     return min(99.5, max(90.0, 97.0 + (vmaf_target - 93.0) / 2))
 
 
+def auto3_search(settings: EncodeSettings) -> Tuple[int, int, int]:
+    """The CRFs auto3 searches (lowest, highest) and how many sample encodes it takes.
+    Targets from 90 up stay within CRF 15-34 (H.264 scale) in 4 encodes. Lower targets need
+    higher CRFs, or they'd all stop at the same ceiling: the top grows 4 CRF per point below 90
+    (up to +12 at VMAF 87 and under), and one more encode keeps the search as fine."""
+    off = _codec_offset(settings)
+    extra = min(12, max(0, round((90.0 - settings.auto3_target) * 4)))
+    top = 63 if settings.codec == "av1" else 51
+    return 15 + off, min(top, 34 + off + extra), 4 if extra == 0 else 5
+
+
 def estimate_crf_measured(src: Path, info: MediaInfo, settings: EncodeSettings,
                           cancel: CancelToken = None, log=None) -> Tuple[int, str]:
     """auto3: encode a short sample at candidate CRFs with the real encoder
@@ -453,8 +464,7 @@ def estimate_crf_measured(src: Path, info: MediaInfo, settings: EncodeSettings,
     Returns (crf, metric_name)."""
     log = log or (lambda msg: None)
     use_vmaf = ff.libvmaf_available()
-    off = _codec_offset(settings)
-    lo_bound, hi_bound = 15 + off, 34 + off
+    lo_bound, hi_bound, steps = auto3_search(settings)
     with tempfile.TemporaryDirectory(prefix="trimmer_auto3_") as td:
         tmp = Path(td)
         ref, length = build_reference(src, info.duration, tmp, cancel, video_filters(settings, info))
@@ -462,7 +472,7 @@ def estimate_crf_measured(src: Path, info: MediaInfo, settings: EncodeSettings,
         lo, hi = lo_bound, hi_bound
         best = None
         tried = []
-        for _ in range(4):
+        for _ in range(steps):
             if lo > hi:
                 break
             mid = (lo + hi) // 2

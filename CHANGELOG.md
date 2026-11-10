@@ -18,7 +18,9 @@ From testers' feedback.
   job and finished ones stay where they are.
 - New: Auto 3's quality target is a slider from 80 to 99 instead of three choices, so it can go
   lower than 90 for smaller files. Marks under it show the recommended 90, 93 (default) and 95, and
-  the text beside it says what the number means.
+  the text beside it says what the number means. Below 90 it searches higher CRFs (with one more
+  sample encode), so each step down really makes a smaller file instead of stopping at the old
+  ceiling.
 - New: the hand cursor over buttons, check boxes, drop-downs, tabs, sliders and sortable column
   headers, so it's clear they can be pressed. Disabled ones keep the arrow.
 - New: thin dividers between columns in the Clips, Replay merge and Queue lists and their headers.
