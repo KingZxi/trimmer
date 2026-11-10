@@ -175,7 +175,9 @@ QTableView::item:selected, QTreeView::item:selected, QListView::item:selected {{
             background: {t['selection']}; color: {t['text']}; }}
 QTreeView::item:hover, QTableView::item:hover, QListView::item:hover {{ background: {t['hover']}; }}
 QHeaderView {{ background: transparent; border: none; }}
-QHeaderView::section {{ background: {t['surface']}; color: {t['muted']}; border: none;
+/* Transparent, not surface: the list's rounded background shows through, so the header's square
+   corners don't poke out past the rounded edge. */
+QHeaderView::section {{ background: transparent; color: {t['muted']}; border: none;
             border-bottom: 1px solid {t['border']}; border-right: 1px solid {t['border']};
             padding: 8px 8px; font-weight: 600; }}
 QHeaderView::section:last {{ border-right: none; }}
@@ -189,6 +191,7 @@ QProgressBar::chunk {{ background: {t['accent']}; border-radius: 4px; }}
 
 QScrollArea {{ background: transparent; border: none; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}
+QAbstractScrollArea::corner {{ background: transparent; border: none; }}   /* between two scroll bars */
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
 QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
 QScrollBar::handle {{ background: {t['border_strong']}; border-radius: 3px; min-height: 30px; min-width: 30px; }}

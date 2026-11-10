@@ -182,3 +182,28 @@ def test_auto3_slider_goes_below_90():
     xs = [f.auto3_marks.mark_x(v) for v in (90, 93, 95)]
     assert xs == sorted(xs) and xs[0] > 0                          # marks in order along the slider
     f.close()
+
+
+def test_list_corners_stay_rounded():
+    """The header and the corner between scroll bars mustn't paint square corners past the lists'
+    rounded edges (a tester spotted the header's corner poking out)."""
+    from PySide6.QtCore import QPoint
+    for mode in ("dark", "light"):
+        theme.apply_theme(app, mode)
+        w = window(WORK / f"out_corners_{mode}")
+        w.resize(1280, 800)
+        for i in range(30):                                   # enough rows for both scroll bars
+            e = fake_clip(f"Clip {i}.mp4", 30, 5_000_000)
+            w.clips.entries.append(e)
+            w.clips._add_row(e)
+        for tab, view in ((w.clips, w.clips.table), (w.queue, w.queue.table), (w.merge, w.merge.tree)):
+            w.tabs.setCurrentWidget(tab)
+            pump(0.2)
+            img = w.grab().toImage()
+            o = view.mapTo(w, QPoint(0, 0))
+            outside = img.pixelColor(o.x() - 2, o.y() + view.height() // 2).name()
+            for x, y in ((1, 1), (view.width() - 2, 1), (1, view.height() - 2), (view.width() - 2, view.height() - 2)):
+                assert img.pixelColor(o.x() + x, o.y() + y).name() == outside, (mode, type(tab).__name__, x, y)
+        w.clips.clear()
+        w.close()
+    theme.apply_theme(app, "dark")
