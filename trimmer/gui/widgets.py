@@ -596,14 +596,29 @@ def auto3_words(v: int) -> str:
 
 
 class SliderMarks(QWidget):
-    """Labelled marks under a horizontal slider (its recommended values), lined up with its handle."""
+    """Labelled marks under a horizontal slider (its recommended values), lined up with its handle.
+    When the slider is too short for the numbers to sit apart (a small window), only the tick
+    lines show."""
+    HEIGHT = 16                   # ticks and numbers
+    TICKS_ONLY = 6
+    MIN_GAP = 24                  # px between neighbouring marks, so "93" and "95" don't overlap
 
     def __init__(self, slider: QSlider, marks, parent=None):
         super().__init__(parent)
         self.slider = slider
         self.marks = list(marks)
-        self.setFixedHeight(16)
+        self.setFixedHeight(self.HEIGHT)
         slider.valueChanged.connect(self.update)
+        slider.installEventFilter(self)
+
+    def fits(self) -> bool:
+        xs = sorted(self.mark_x(v) for v in self.marks)
+        return all(b - a >= self.MIN_GAP for a, b in zip(xs, xs[1:]))
+
+    def eventFilter(self, obj, ev):
+        if ev.type() in (QEvent.Resize, QEvent.Show):
+            self.setFixedHeight(self.HEIGHT if self.fits() else self.TICKS_ONLY)   # no empty gap for numbers
+        return False
 
     def mark_x(self, v) -> float:
         opt = QStyleOptionSlider()
@@ -617,6 +632,7 @@ class SliderMarks(QWidget):
         return x + self.slider.x() - self.x()
 
     def paintEvent(self, e):
+        numbers = self.fits()
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         f = p.font()
@@ -627,6 +643,8 @@ class SliderMarks(QWidget):
             on = v == self.slider.value()
             p.setPen(QPen(colour("accent" if on else "faint"), 1.4))
             p.drawLine(QPointF(x, 0), QPointF(x, 4))
+            if not numbers:
+                continue
             p.setPen(colour("text" if on else "muted"))
             p.drawText(QRectF(x - 14, 3, 28, 13), Qt.AlignHCenter | Qt.AlignTop, f"{v:g}")
         p.end()

@@ -207,3 +207,18 @@ def test_list_corners_stay_rounded():
         w.clips.clear()
         w.close()
     theme.apply_theme(app, "dark")
+
+
+def test_auto3_numbers_hide_when_cramped():
+    """The small Edit window has a short slider: tick lines only, no overlapping numbers."""
+    from trimmer.gui.clips_tab import CustomEncodeDialog
+    d = CustomEncodeDialog(EncodeSettings(codec="h265", quality="auto3", auto3_target=90), ["software"])
+    d.resize(480, d.height())
+    d.show()
+    pump(0.1)
+    marks = d.form.auto3_marks
+    assert not marks.fits() and marks.height() == marks.TICKS_ONLY
+    d.resize(900, d.height())
+    pump(0.1)
+    assert marks.fits() and marks.height() == marks.HEIGHT
+    d.close()
