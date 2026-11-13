@@ -5,8 +5,8 @@ from pathlib import Path
 
 # First: this sets up the offscreen app and the tests' own data folder.
 from tests.gui_helpers import WORK, app, gameplay_clip, pump, replays, window  # noqa: F401
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QCheckBox, QComboBox, QPushButton
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtWidgets import QCheckBox, QComboBox, QHeaderView, QPushButton
 
 from trimmer.core.encode import EncodeSettings
 from trimmer.core.ffmpeg import AudioTrack, MediaInfo
@@ -222,3 +222,46 @@ def test_auto3_numbers_hide_when_cramped():
     pump(0.1)
     assert marks.fits() and marks.height() == marks.HEIGHT
     d.close()
+
+
+def _mouse(vp, typ, x, buttons):
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+    btn = Qt.LeftButton if typ != QEvent.MouseMove else Qt.NoButton
+    QApplication.sendEvent(vp, QMouseEvent(typ, QPointF(x, 10), vp.mapToGlobal(QPointF(x, 10)), btn, buttons,
+                                           Qt.NoModifier))
+
+
+def test_column_dividers_are_easy_to_drag():
+    """A divider can be dragged from a few pixels either side (Qt's own grab area is ~2 px, so a near
+    miss sorted the list), every Queue column can be resized, and the last column fills the rest."""
+    from trimmer.gui.widgets import HeaderSort
+    w = window(WORK / "out_dividers")
+    w.resize(1500, 900)
+    w.show()
+    for tab, view in ((w.clips, w.clips.table), (w.merge, w.merge.tree), (w.queue, w.queue.table)):
+        w.tabs.setCurrentWidget(tab)
+        pump(0.05)
+        h = view.horizontalHeader() if hasattr(view, "horizontalHeader") else view.header()
+        vp = h.viewport()
+        sorted_by = []
+        h.sectionClicked.connect(sorted_by.append)
+        for col in range(h.count() - 1):
+            edge = h.sectionViewportPosition(col) + h.sectionSize(col)
+            for off in (-HeaderSort.GRAB + 1, 0, HeaderSort.GRAB - 1):
+                x = edge + off
+                before = h.sectionSize(col)
+                _mouse(vp, QEvent.MouseMove, x, Qt.NoButton)
+                assert vp.cursor().shape() == Qt.SplitHCursor, (tab, col, off)
+                _mouse(vp, QEvent.MouseButtonPress, x, Qt.LeftButton)
+                _mouse(vp, QEvent.MouseMove, x + 40, Qt.LeftButton)
+                _mouse(vp, QEvent.MouseButtonRelease, x + 40, Qt.NoButton)
+                assert h.sectionSize(col) == before + 40, (tab, col, off)
+                h.resizeSection(col, before)
+        assert sorted_by == []                                   # resizing never sorts
+        assert h.stretchLastSection()
+        h.sectionClicked.disconnect()
+    assert all(w.queue.table.horizontalHeader().sectionResizeMode(c) == QHeaderView.Interactive
+               for c in range(len(queue_tab.COLS)))              # Settings no longer stuck stretching
+    w.close()

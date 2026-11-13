@@ -10,6 +10,12 @@
 - Saving a preset under a name that's already taken now asks before replacing it, instead of
   replacing it straight away.
 - Renaming a preset carries over to the clips and merges that use it.
+- Fixed: dragging a column divider in the Clips, Replay merge and Queue lists. The grab area was
+  only a couple of pixels wide, so a near miss sorted the list instead (and in the Queue, asked
+  about sorting); it's now a few pixels either side, with the resize cursor showing where it works.
+  Double-clicking a divider fits the column to its contents.
+- Fixed: the Queue's Settings column couldn't be resized and got squashed when another column was
+  widened. Every Queue column can be dragged now, and the last one fills the space left.
 
 ## 1.3.0 (2026-11-13)
 

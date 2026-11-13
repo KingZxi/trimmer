@@ -124,10 +124,12 @@ class QueueTab(QWidget):
         h = self.table.horizontalHeader()
         h.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         h.setHighlightSections(False)
+        # Every divider can be dragged; the last column takes up what's left. (Settings used to
+        # stretch, which made its divider impossible to drag and squashed it when another widened.)
         h.setSectionResizeMode(QHeaderView.Interactive)
-        h.setStretchLastSection(False)
-        h.setSectionResizeMode(C_SET, QHeaderView.Stretch)
-        for c, w in ((C_NAME, 210), (C_DEST, 190), (C_STATUS, 120), (C_BAR, 150), (C_DETAIL, 170),
+        h.setStretchLastSection(True)
+        h.setMinimumSectionSize(60)
+        for c, w in ((C_NAME, 210), (C_DEST, 190), (C_SET, 260), (C_STATUS, 120), (C_BAR, 150), (C_DETAIL, 170),
                      (C_SIZE, 230), (C_DEL, 110)):
             self.table.setColumnWidth(c, w)
         self.table.itemSelectionChanged.connect(self._selection)

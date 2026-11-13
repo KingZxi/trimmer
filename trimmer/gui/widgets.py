@@ -12,7 +12,7 @@ from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QUrl, Si
 from PySide6.QtGui import (QColor, QDesktopServices, QFont, QIcon, QImage, QKeySequence, QPainter, QPainterPath,
                            QPen, QShortcut)
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QHBoxLayout,
-                               QLabel, QMenu, QMessageBox, QSlider, QSpinBox, QStyle, QStyleOptionSlider,
+                               QHeaderView, QLabel, QMenu, QMessageBox, QSlider, QSpinBox, QStyle, QStyleOptionSlider,
                                QTableWidget, QToolButton, QTreeWidget, QVBoxLayout, QWidget)
 
 from ..core.describe import preset_summary
@@ -100,11 +100,15 @@ class _Hint:
 class HeaderSort(QObject):
     """Click a column header to sort a list by it (click again to reverse). The tab does the sorting
     itself, through on_sort(column, descending), because its rows stand for items in its own list;
-    on_sort returns False to cancel. Sortable headers get the hand cursor, except over the edges
-    that resize a column."""
+    on_sort returns False to cancel. Sortable headers get the hand cursor. Column dividers can be
+    dragged from a few pixels either side (GRAB), wider than Qt's own sliver, and double-clicked
+    to fit the column to its contents."""
+    GRAB = 7
 
     def __init__(self, view, columns, on_sort, tip="Click to sort by this column"):
         super().__init__(view)
+        self.view = view
+        self._drag = None           # (column, x the drag started at, its width then)
         self.header = view.header() if isinstance(view, QTreeWidget) else view.horizontalHeader()
         self.columns = set(columns)
         self.on_sort = on_sort
@@ -139,16 +143,52 @@ class HeaderSort(QObject):
         self.column = None
         self.header.setSortIndicatorShown(False)
 
+    def _divider_at(self, x):
+        """The column whose right-hand divider is within GRAB px of x and can be dragged, or None.
+        Qt's own grab area is only about 2 px either side, so a near miss sorted the list instead."""
+        h = self.header
+        best, gap = None, self.GRAB + 1
+        for v in range(h.count()):
+            col = h.logicalIndex(v)
+            if h.isSectionHidden(col):
+                continue
+            d = abs(x - (h.sectionViewportPosition(col) + h.sectionSize(col)))
+            if d < gap:
+                best, gap = col, d
+        if best is None or h.sectionResizeMode(best) != QHeaderView.Interactive:
+            return None
+        shown = [v for v in range(h.count()) if not h.isSectionHidden(h.logicalIndex(v))]
+        if h.stretchLastSection() and h.visualIndex(best) == shown[-1]:
+            return None                 # the last column fills what's left; its edge isn't a divider
+        return best
+
     def eventFilter(self, obj, ev):
-        if ev.type() == QEvent.MouseMove and not ev.buttons():
+        t = ev.type()
+        if t in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick) and ev.button() == Qt.LeftButton:
+            col = self._divider_at(int(ev.position().x()))
+            if col is not None:
+                if t == QEvent.MouseButtonDblClick:
+                    self.view.resizeColumnToContents(col)       # like double-clicking Qt's own handle
+                else:
+                    self._drag = (col, ev.position().x(), self.header.sectionSize(col))
+                return True                                     # a resize, never a click that sorts
+        elif t == QEvent.MouseMove and self._drag is not None:
+            col, x0, w0 = self._drag
+            self.header.resizeSection(col, max(self.header.minimumSectionSize(),
+                                               int(w0 + ev.position().x() - x0)))
+            return True
+        elif t == QEvent.MouseButtonRelease and self._drag is not None:
+            self._drag = None
+            return True
+        elif t == QEvent.MouseMove and not ev.buttons():
             x = int(ev.position().x())
-            h = self.header
-            edge = h.logicalIndexAt(x - 5) != h.logicalIndexAt(x + 5)
-            if not edge and h.logicalIndexAt(x) in self.columns:
+            if self._divider_at(x) is not None:
+                obj.setCursor(Qt.SplitHCursor)
+            elif self.header.logicalIndexAt(x) in self.columns:
                 obj.setCursor(Qt.PointingHandCursor)
             else:
-                obj.unsetCursor()        # the header's own resize cursor shows on the edges
-        elif ev.type() == QEvent.Leave:
+                obj.unsetCursor()
+        elif t == QEvent.Leave and self._drag is None:
             obj.unsetCursor()
         return False
 
