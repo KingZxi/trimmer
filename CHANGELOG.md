@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.1 (not released yet)
+
+- New: organise compression presets in Settings > Compression. Move them up and down (or drag
+  them) to change the order the Clips, Replay merge and Queue lists show them in, rename them,
+  duplicate one to make a variation, and update one from the custom settings. Untick a preset to
+  hide it from those lists without deleting it; a clip or merge already using it keeps it. Hovering
+  over a preset shows its settings in one line.
+- Saving a preset under a name that's already taken now asks before replacing it, instead of
+  replacing it straight away.
+- Renaming a preset carries over to the clips and merges that use it.
+
 ## 1.3.0 (2026-11-13)
 
 From testers' feedback as well as some of my own testing.

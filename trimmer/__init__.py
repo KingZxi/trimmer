@@ -9,7 +9,7 @@ file for details.
 """
 
 APP_NAME = "Trimmer"
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 AUTHOR = "KingZxi"
 AUTHOR_URL = "https://github.com/KingZxi"
 COPYRIGHT = "© 2026 KingZxi"

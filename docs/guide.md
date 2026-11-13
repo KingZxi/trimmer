@@ -22,6 +22,10 @@ Drop in one clip or hundreds, either as files or whole folders. For each clip yo
   target file size, lossless, H.264/H.265/AV1, NVENC/QSV/AMF when your GPU
   supports it, optional 10-bit colour for H.265/AV1, and a resolution or frame
   rate cap.
+- **Organise presets** in Settings → Compression: change their order (Move up
+  and Move down, or drag), rename, duplicate, update one from the custom
+  settings, or untick one to hide it from the compression lists without
+  deleting it. Hover over a preset to see its settings.
 - **Rip** audio tracks (original, WAV, FLAC, MP3, M4A) or the video on its own.
 - Compressed files get the settings in their name, e.g. `(LOSSY), (CQ28
   auto2, H265 NVENC, medium)`. Turn this off in Settings → Files.
