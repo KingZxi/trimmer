@@ -34,6 +34,26 @@ def quality_text(e: EncodeSettings, short: bool = False) -> str:
     return f"{word}{e.quality}" if short else f"{word} {e.quality}"
 
 
+def preset_summary(encode: dict) -> str:
+    """A preset in one line, for its tooltip: "H.265, Auto 3 (target 93), preset medium"."""
+    e = EncodeSettings.from_dict(encode)
+    if e.mode == "lossless":
+        bits = [codec_name(e), "lossless"]
+    elif e.is_autoset:
+        bits = [f"Auto settings (give up {e.give_up})"]
+    else:
+        bits = [codec_name(e) + ("" if e.encoder == "software" else f" ({e.encoder.upper()})"), quality_text(e)]
+    bits.append(f"preset {e.preset}")
+    bits.append("audio copied" if e.audio == "copy" else f"audio {e.audio} kbps")
+    if e.max_height:
+        bits.append(f"max {e.max_height}p")
+    if e.max_fps:
+        bits.append(f"max {e.max_fps:g} fps")
+    if e.revert_if_larger:
+        bits.append("keep original if larger")
+    return ", ".join(bits)
+
+
 def gap_note(result, short=False) -> str:
     """The source problems a finished job reported (frame gaps it kept), in one line."""
     w = getattr(result, "warnings", None) or []

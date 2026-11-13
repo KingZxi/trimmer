@@ -23,7 +23,7 @@ from ..core.jobs import JobContext, JobOptions, MergeJob, run_job, session_names
 from ..core.util import VIDEO_EXTENSIONS, format_hms, format_hms_ms, parse_timecode, same_file, sanitize_filename
 from .theme import colour, set_kind
 from .widgets import (OWN_TIP, STAR, HeaderSort, HintTree, OptionBinding, OwnOptions, card, clean_opts, copy_opts,
-                      hbox, label, show_in_folder, sort_text)
+                      fill_presets, hbox, label, show_in_folder, show_preset, sort_text)
 from .clips_tab import CustomEncodeDialog
 from .folder_watch import FolderWatcher
 from .preview import PreviewDialog
@@ -363,7 +363,8 @@ class MergeTab(OwnOptions, QWidget):
         self.form.check("mix", self.mix)
         self.form.check("mix_keep", self.mix_keep)
         self.form.check("compress", self.compress)
-        self.form.combo("preset", self.preset, by_text=True)
+        self.form.add("preset", self.preset.currentText,
+                      lambda v: show_preset(self.preset, self.main.settings, v), self.preset.currentIndexChanged)
         self.form.check("rip", self.g_rip)
         self.form.combo("rip_fmt", self.rip_fmt)
         self.form.check("rip_video", self.rip_video)
@@ -385,9 +386,7 @@ class MergeTab(OwnOptions, QWidget):
         self.shared.update(mode="trim" if s.merge_mode == "trim" else "merge", method=s.merge_method,
                            info_file=s.generate_clip_log, rip_fmt=s.rip_format, delete_orig=s.delete_originals)
         with self.form.quiet():
-            self.preset.clear()
-            self.preset.addItem("Custom (Settings)")
-            self.preset.addItems(list(s.presets.keys()))
+            fill_presets(self.preset, s)
         self._show_opts()
         self._refresh_default_names()
 
@@ -406,6 +405,9 @@ class MergeTab(OwnOptions, QWidget):
     # ------------------------------------------------- per-session options
     def _own(self, s):
         return self.custom.get(id(s))
+
+    def _all_own(self):
+        return list(self.custom.values())
 
     def _set_own(self, s, opts):
         if opts is None:

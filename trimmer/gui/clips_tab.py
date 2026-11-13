@@ -22,7 +22,7 @@ from .audio_device import follow_default_output
 from .theme import set_kind
 from .widgets import (OWN_TIP, STAR, EncodeForm, FullScreen, HeaderSort, HintTable, OptionBinding, OwnOptions,
                       Timeline, TrackPicker, card, clean_opts, clearable, copy_opts, hbox, label, show_in_folder,
-                      sort_text)
+                      fill_presets, show_preset, sort_text)
 
 # Qt's player, or the silent frame fallback when Windows blocks its DLLs
 from .playback import (HAVE_PLAYBACK, NO_SOUND, NO_SOUND_TIP, PLAYBACK_ERROR, QAudioOutput, QMediaPlayer,
@@ -340,7 +340,8 @@ class ClipsTab(OwnOptions, QWidget):
         self.form.check("mix", self.mix)
         self.form.check("mix_keep", self.mix_keep)
         self.form.check("compress", self.compress)
-        self.form.combo("preset", self.preset, by_text=True)
+        self.form.add("preset", self.preset.currentText,
+                      lambda v: show_preset(self.preset, self.main.settings, v), self.preset.currentIndexChanged)
         self.form.check("exact", self.exact)
         self.form.combo("rip_fmt", self.rip_fmt)
         self.form.check("rip_video", self.rip_video)
@@ -383,9 +384,7 @@ class ClipsTab(OwnOptions, QWidget):
         s = self.main.settings
         self.shared.update(exact=s.exact_cuts, delete_orig=s.delete_originals, rip_fmt=s.rip_format)
         with self.form.quiet():
-            self.preset.clear()
-            self.preset.addItem("Custom (Settings)")
-            self.preset.addItems(list(s.presets.keys()))
+            fill_presets(self.preset, s)
         self.exact.setText("Frame-exact cuts (smart cut: only the frames at each cut are re-encoded)"
                            if s.smart_cut else "Frame-exact cuts (re-encodes at high quality when not compressing)")
         self.delete_orig.setText("Delete originals after everything is saved and checked ("
@@ -772,6 +771,9 @@ class ClipsTab(OwnOptions, QWidget):
     # ------------------------------------------------------ per-clip options
     def _own(self, e):
         return e.opts
+
+    def _all_own(self):
+        return [e.opts for e in self.entries if e.opts]
 
     def _set_own(self, e, opts):
         e.opts = opts

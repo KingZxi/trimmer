@@ -311,6 +311,9 @@ class MainWindow(QMainWindow):
                 apply_theme(QApplication.instance(), self.settings.theme)
                 for w in QApplication.instance().allWidgets():
                     w.update()
+            if dialog.renamed:
+                self.clips.rename_presets(dialog.renamed)
+                self.merge.rename_presets(dialog.renamed)
             self.clips.refresh_from_settings()
             self.merge.refresh_from_settings()
             self._show_merge_tab(self.settings.show_replay_merge)

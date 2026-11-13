@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDia
 from ..core import ffmpeg as ff
 from ..core import jobs as J
 from ..core import savings
-from ..core.describe import compression_line, default_name, describe, gap_note
+from ..core.describe import compression_line, default_name, describe, gap_note, preset_summary
 from ..core.encode import EncodeSettings
 from ..core.estimate import prepare_job
 from ..core.journal import save_queue
@@ -918,8 +918,10 @@ class QueueTab(QWidget):
             comp.addAction("Custom (Settings)", lambda: self.set_compression(waiting, ""))
             comp.addAction("Custom, edit first…", lambda: self.edit_compression(waiting))
             comp.addSeparator()
-            for name in self.main.settings.presets:
-                comp.addAction(name, lambda n=name: self.set_compression(waiting, n))
+            for name in self.main.settings.shown_presets():
+                act = comp.addAction(name, lambda n=name: self.set_compression(waiting, n))
+                act.setToolTip(preset_summary(self.main.settings.presets[name]))
+            comp.setToolTipsVisible(True)
             dele = m.addMenu("Delete original")
             dele.addAction("Yes, after the output is checked", lambda: self.set_delete(waiting, True))
             dele.addAction("No, keep it", lambda: self.set_delete(waiting, False))

@@ -29,7 +29,8 @@ def close_dialog(request):
     """Each GUI test starts from a clean data folder, closing never opens the real Save/Close
     dialog, and leftovers don't leak into the next test.
     (Patched by hand: a test's monkeypatch.undo() would take a fixture's patch away too.)"""
-    if request.module.__name__ not in ("tests.test_gui", "tests.test_warnings", "tests.test_lists", "tests.test_updates"):
+    if request.module.__name__ not in ("tests.test_gui", "tests.test_warnings", "tests.test_lists", "tests.test_updates",
+                                       "tests.test_presets"):
         yield                       # engine tests: no window, and never touch the real app data
         return
     from trimmer.gui import main_window
@@ -63,7 +64,8 @@ def close_dialog(request):
 def no_slot_errors(request):
     """An exception inside a Qt slot only reaches sys.excepthook (the app shows its error box);
     fail the test instead of letting it pass silently."""
-    if request.module.__name__ not in ("tests.test_gui", "tests.test_warnings", "tests.test_lists", "tests.test_updates"):
+    if request.module.__name__ not in ("tests.test_gui", "tests.test_warnings", "tests.test_lists", "tests.test_updates",
+                                       "tests.test_presets"):
         yield
         return
     errors, real = [], sys.excepthook

@@ -51,7 +51,8 @@ class AppSettings:
     warn_already_processed: bool = True   # ask before redoing work a file already went through
     # Compression
     encode: dict = field(default_factory=lambda: EncodeSettings().to_dict())
-    presets: dict = field(default_factory=default_presets)
+    presets: dict = field(default_factory=default_presets)   # in the order the lists show them
+    hidden_presets: list = field(default_factory=list)       # kept, but left out of the Compression lists
     # Replay merging (names match the old ~/.obs_merge_settings.json keys)
     merge_mode: str = "merge"            # merge | trim
     merge_method: str = "auto"           # auto | lossless | exact
@@ -85,6 +86,10 @@ class AppSettings:
     last_update_check: str = ""           # when it last checked, as shown in Settings
     warn_queue_sort: bool = True          # say that sorting the queue changes the order jobs run in
     ui: dict = field(default_factory=dict)
+
+    def shown_presets(self) -> list:
+        """The preset names the Clips, Replay merge and Queue lists offer, in order."""
+        return [n for n in self.presets if n not in self.hidden_presets]
 
     @classmethod
     def path(cls) -> Path:
@@ -129,6 +134,8 @@ class AppSettings:
                 s.presets = {**s.presets, AUTO3_PRESET: default_presets()[AUTO3_PRESET]}
             s.ui["preset_auto3_added"] = True
         s.encode = EncodeSettings.from_dict(s.encode).to_dict()
+        hidden = s.hidden_presets if isinstance(s.hidden_presets, list) else []
+        s.hidden_presets = [n for n in dict.fromkeys(hidden) if isinstance(n, str) and n in s.presets]
         if s.conflict_policy not in ("ask", "rename", "overwrite", "skip"):
             s.conflict_policy = "ask"
         if s.on_close not in ("ask", "save", "discard"):

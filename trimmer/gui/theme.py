@@ -166,9 +166,9 @@ QTableView, QTreeView, QListView, QPlainTextEdit, QTextBrowser {{ background: {t
 /* A thin divider between columns, in the header and down the list. */
 QTableView::item {{ padding: 0 8px; border: none; border-right: 1px solid {t['border']}; }}
 QTreeView::item {{ padding: 6px 4px; border: none; border-right: 1px solid {t['border']}; }}
-QTreeView::indicator, QTableView::indicator {{ width: 15px; height: 15px; border-radius: 5px;
+QTreeView::indicator, QTableView::indicator, QListView::indicator {{ width: 15px; height: 15px; border-radius: 5px;
             border: 1px solid {t['border_strong']}; background: {t['surface2']}; }}
-QTreeView::indicator:checked, QTableView::indicator:checked {{ background: {t['accent']};
+QTreeView::indicator:checked, QTableView::indicator:checked, QListView::indicator:checked {{ background: {t['accent']};
             border-color: {t['accent']}; image: url({check}); }}
 QListView::item {{ padding: 4px 8px; border-radius: 6px; }}
 QTableView::item:selected, QTreeView::item:selected, QListView::item:selected {{

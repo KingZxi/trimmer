@@ -6,7 +6,7 @@ from PySide6.QtCore import QDate, Qt, QTimer
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDateEdit, QDialogButtonBox, QDoubleSpinBox, QFrame,
                                QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QKeySequenceEdit, QLabel, QLineEdit,
-                               QListWidget, QSpinBox,
+                               QListWidget, QListWidgetItem, QSpinBox, QAbstractItemView,
                                QMessageBox, QPushButton, QScrollArea, QSizePolicy, QTabWidget, QTextBrowser, QToolButton,
                                QVBoxLayout, QWidget)
 
@@ -14,14 +14,15 @@ from .. import APP_NAME, AUTHOR, AUTHOR_URL, COPYRIGHT, LICENSE_NAME, __version_
 from ..core import ffmpeg as ff
 from ..core import savings
 from ..core import updates as U
+from ..core.describe import preset_summary
 from ..core.encode import EncodeSettings
 from ..core.render import AUDIO_RIP_FORMATS
 from ..core.settings import AppSettings, default_presets
 from ..core.journal import clean_logs, log_files
 from ..core.util import app_data_dir
 from .system_hooks import DEFAULT_IGNORE, IS_WINDOWS, play_chime
-from .theme import set_kind
-from .widgets import EncodeForm, hbox, label
+from .theme import colour, set_kind
+from .widgets import CUSTOM_PRESET, EncodeForm, hbox, label
 
 
 def _value(w):
@@ -436,47 +437,183 @@ class SettingsDialog(QDialog):
         self.enc = EncodeForm(self.encoders)
         self.enc.set_settings(self.s.encode_settings())
         lay.addWidget(self.enc)
-        lay.addWidget(QLabel("Saved presets:"))
+        lay.addWidget(label("Saved presets. Ticked ones are offered in the Clips, Replay merge and Queue "
+                            "compression lists, in this order (drag to reorder):", wrap=True))
         self.presets = dict(self.s.presets)
+        self.hidden = set(self.s.hidden_presets)
+        self.renamed = {}                   # {name when the dialog opened: name now}
         self.plist = QListWidget()
-        self.plist.addItems(list(self.presets.keys()))
-        self.plist.setMaximumHeight(110)
-        lay.addWidget(self.plist)
-        b_save = QPushButton("Save custom settings as preset…")
-        b_save.clicked.connect(self._save_preset)
-        b_load = QPushButton("Load preset into custom")
-        b_load.clicked.connect(self._load_preset)
-        b_del = QPushButton("Delete preset")
-        b_del.clicked.connect(self._del_preset)
-        b_reset = QPushButton("Restore defaults")
-        b_reset.clicked.connect(self._reset_presets)
-        lay.addWidget(hbox(b_save, b_load, b_del, b_reset))
+        self.plist.setDragDropMode(QAbstractItemView.InternalMove)
+        self.plist.setDefaultDropAction(Qt.MoveAction)
+        self.plist.setMinimumHeight(150)
+        self.plist.itemChanged.connect(self._preset_ticked)
+        self.plist.currentRowChanged.connect(self._preset_buttons)
+        self.plist.itemDoubleClicked.connect(lambda _: self._load_preset())
+        self.plist.model().rowsMoved.connect(self._preset_order_from_list)
+        lay.addWidget(self.plist, 1)
+
+        def btn(text, tip, fn):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.clicked.connect(fn)
+            return b
+        b_save = btn("Save custom as preset…", "Save the custom settings above as a new preset", self._save_preset)
+        self.b_update = btn("Update from custom", "Replace the selected preset's settings with the custom "
+                            "settings above", self._update_preset)
+        self.b_load = btn("Load into custom", "Copy the selected preset's settings into the custom settings "
+                          "above (or double-click it)", self._load_preset)
+        self.b_rename = btn("Rename…", "Rename the selected preset. Clips and merges that use it keep it",
+                            self._rename_preset)
+        self.b_dup = btn("Duplicate", "Make a copy of the selected preset, to change one setting", self._dup_preset)
+        self.b_up = btn("Move up", "Move the selected preset up the lists", lambda: self._move_preset(-1))
+        self.b_down = btn("Move down", "Move the selected preset down the lists", lambda: self._move_preset(1))
+        self.b_del = btn("Delete", "Delete the selected preset. Untick it instead to only hide it from the lists",
+                         self._del_preset)
+        b_reset = btn("Restore defaults", "Put back the built-in presets (your own are removed)",
+                      self._reset_presets)
+        lay.addWidget(hbox(b_save, self.b_update, self.b_load, self.b_rename, self.b_dup))
+        lay.addWidget(hbox(self.b_up, self.b_down, self.b_del, b_reset))
+        self._refresh_presets()
         return w
 
+    # The list widget is the order and the ticks; self.presets the settings, kept in the same order.
+    def _current_preset(self):
+        it = self.plist.currentItem()
+        return it.text() if it is not None else None
+
+    def _preset_buttons(self, *_):
+        row, n = self.plist.currentRow(), self.plist.count()
+        for b in (self.b_update, self.b_load, self.b_rename, self.b_dup, self.b_del):
+            b.setEnabled(row >= 0)
+        self.b_up.setEnabled(row > 0)
+        self.b_down.setEnabled(0 <= row < n - 1)
+
+    def _preset_ticked(self, it):
+        (self.hidden.discard if it.checkState() == Qt.Checked else self.hidden.add)(it.text())
+        self._style_preset(it)
+
+    def _style_preset(self, it):
+        """A hidden preset is dimmed, and its tooltip says so."""
+        name = it.text()
+        self.plist.blockSignals(True)
+        it.setForeground(colour("faint" if name in self.hidden else "text"))
+        it.setToolTip(preset_summary(self.presets[name])
+                      + ("\nHidden from the compression lists (tick it to show it)" if name in self.hidden else ""))
+        self.plist.blockSignals(False)
+
+    def _preset_order_from_list(self, *_):
+        names = [self.plist.item(i).text() for i in range(self.plist.count())]
+        self.presets = {n: self.presets[n] for n in names}
+        self._preset_buttons()
+
+    def _ask_name(self, title, text, start=""):
+        """A preset name nobody else uses, or None (cancelled)."""
+        while True:
+            name, ok = QInputDialog.getText(self, title, text, text=start)
+            name = name.strip()
+            if not ok or not name:
+                return None
+            if name == CUSTOM_PRESET:
+                QMessageBox.warning(self, title, f'"{CUSTOM_PRESET}" is the name of the custom settings. '
+                                    "Pick another name.")
+            else:
+                return name
+            start = name
+
     def _save_preset(self):
-        name, ok = QInputDialog.getText(self, "Save preset", "Preset name:")
-        if ok and name.strip():
-            self.presets[name.strip()] = self.enc.settings().to_dict()
-            self._refresh_presets()
+        name = self._ask_name("Save preset", "Preset name:")
+        if name is None:
+            return
+        if name in self.presets and QMessageBox.question(
+                self, "Save preset", f'There\'s already a preset called "{name}". Replace its settings with '
+                "the custom settings?", QMessageBox.Yes | QMessageBox.Cancel) != QMessageBox.Yes:
+            return
+        self.presets[name] = self.enc.settings().to_dict()
+        self._refresh_presets(select=name)
+
+    def _update_preset(self):
+        name = self._current_preset()
+        if name and QMessageBox.question(
+                self, "Update preset", f'Replace the settings of "{name}" with the custom settings above?',
+                QMessageBox.Yes | QMessageBox.Cancel) == QMessageBox.Yes:
+            self.presets[name] = self.enc.settings().to_dict()
+            self._refresh_presets(select=name)
 
     def _load_preset(self):
-        it = self.plist.currentItem()
-        if it:
-            self.enc.set_settings(EncodeSettings.from_dict(self.presets[it.text()]))
+        name = self._current_preset()
+        if name:
+            self.enc.set_settings(EncodeSettings.from_dict(self.presets[name]))
+
+    def _rename_preset(self):
+        old = self._current_preset()
+        if not old:
+            return
+        new = self._ask_name("Rename preset", "New name:", old)
+        if new is None or new == old:
+            return
+        if new in self.presets:
+            QMessageBox.warning(self, "Rename preset", f'There\'s already a preset called "{new}".')
+            return
+        self.presets = {(new if n == old else n): v for n, v in self.presets.items()}
+        if old in self.hidden:
+            self.hidden = (self.hidden - {old}) | {new}
+        first = next((k for k, v in self.renamed.items() if v == old), old)
+        self.renamed[first] = new
+        self.renamed = {k: v for k, v in self.renamed.items() if k != v}
+        self._refresh_presets(select=new)
+
+    def _dup_preset(self):
+        name = self._current_preset()
+        if not name:
+            return
+        copy, n = f"{name} (copy)", 2
+        while copy in self.presets:
+            copy, n = f"{name} (copy {n})", n + 1
+        items = list(self.presets.items())
+        i = [k for k, _ in items].index(name) + 1
+        self.presets = dict(items[:i] + [(copy, dict(self.presets[name]))] + items[i:])
+        self._refresh_presets(select=copy)
+
+    def _move_preset(self, step):
+        name = self._current_preset()
+        names = list(self.presets)
+        if not name:
+            return
+        i = names.index(name)
+        j = i + step
+        if 0 <= j < len(names):
+            names[i], names[j] = names[j], names[i]
+            self.presets = {n: self.presets[n] for n in names}
+            self._refresh_presets(select=name)
 
     def _del_preset(self):
-        it = self.plist.currentItem()
-        if it:
-            self.presets.pop(it.text(), None)
-            self._refresh_presets()
+        name = self._current_preset()
+        if name:
+            row = self.plist.currentRow()
+            self.presets.pop(name, None)
+            self.hidden.discard(name)
+            names = list(self.presets)
+            self._refresh_presets(select=names[min(row, len(names) - 1)] if names else None)
 
     def _reset_presets(self):
         self.presets = default_presets()
+        self.hidden = set()
         self._refresh_presets()
 
-    def _refresh_presets(self):
+    def _refresh_presets(self, select=None):
+        self.plist.blockSignals(True)
         self.plist.clear()
-        self.plist.addItems(list(self.presets.keys()))
+        for name in self.presets:
+            it = QListWidgetItem(name)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled)
+            it.setFlags(it.flags() & ~Qt.ItemIsDropEnabled)      # dropping goes between rows, not onto one
+            it.setCheckState(Qt.Unchecked if name in self.hidden else Qt.Checked)
+            self.plist.addItem(it)
+            self._style_preset(it)
+            if name == select:
+                self.plist.setCurrentItem(it)
+        self.plist.blockSignals(False)
+        self._preset_buttons()
 
     # --------------------------------------------------------------- merge
     def _merge(self):
@@ -588,7 +725,8 @@ class SettingsDialog(QDialog):
         s.auto_delete_logs = self.auto_logs.isChecked()
         s.keep_logs_days = self.keep_logs.value()
         s.encode = enc.to_dict()
-        s.presets = self.presets
+        s.presets = dict(self.presets)
+        s.hidden_presets = [n for n in self.presets if n in self.hidden]
         s.max_gap = self.gap.value()
         s.audio_align = self.align.isChecked()
         s.align_margin = self.align_margin.value()

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleS
                                QLabel, QMenu, QMessageBox, QSlider, QSpinBox, QStyle, QStyleOptionSlider,
                                QTableWidget, QToolButton, QTreeWidget, QVBoxLayout, QWidget)
 
+from ..core.describe import preset_summary
 from ..core.encode import CODECS, ENCODERS, VALID_PRESETS, EncodeSettings, give_up_target
 from ..core.util import format_hms_ms
 
@@ -218,6 +219,16 @@ class OwnOptions:
     def _show_current_opts(self):
         raise NotImplementedError
 
+    def _all_own(self) -> list:
+        """Every item's own options (for renaming a preset)."""
+        raise NotImplementedError
+
+    def rename_presets(self, renamed: dict):
+        """Presets renamed in Settings ({old: new}): options that used the old name use the new one."""
+        for st in [self.shared, *self._all_own()]:
+            if st.get("preset") in renamed:
+                st["preset"] = renamed[st["preset"]]
+
     def _eff(self, item) -> dict:
         """The options an item is saved with: its own, else the shared ones."""
         return self._own(item) or self.shared
@@ -259,6 +270,34 @@ class OwnOptions:
             self._set_own(it, None)
         self._options_changed(items)
         self._show_current_opts()
+
+
+CUSTOM_PRESET = "Custom (Settings)"
+HIDDEN_NOTE = "Hidden in Settings > Compression, shown because it's in use here"
+
+
+def fill_presets(combo: QComboBox, settings):
+    """Custom (Settings), then the presets Settings shows, in its order, each with a summary tooltip."""
+    combo.clear()
+    combo.addItem(CUSTOM_PRESET)
+    combo.setItemData(0, "The custom compression settings in Settings > Compression", Qt.ToolTipRole)
+    for name in settings.shown_presets():
+        combo.addItem(name)
+        combo.setItemData(combo.count() - 1, preset_summary(settings.presets[name]), Qt.ToolTipRole)
+
+
+def show_preset(combo: QComboBox, settings, name: str):
+    """Show a clip's or session's preset. A hidden one it still uses is added to the list (only
+    while something uses it), so it isn't shown as Custom; a deleted one shows as Custom."""
+    for i in reversed(range(combo.count())):
+        if combo.itemData(i) == "hidden" and combo.itemText(i) != name:
+            combo.removeItem(i)
+    i = combo.findText(name)
+    if i < 0 and name in settings.presets:
+        combo.addItem(name, "hidden")
+        i = combo.count() - 1
+        combo.setItemData(i, preset_summary(settings.presets[name]) + "\n" + HIDDEN_NOTE, Qt.ToolTipRole)
+    combo.setCurrentIndex(max(0, i))
 
 
 class OptionBinding:
