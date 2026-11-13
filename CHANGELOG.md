@@ -4,7 +4,7 @@
 
 From testers' feedback as well as some of my own testing.
 
-Thanks to @usmn-m in particular for heavily testing 1.2.0 and suggesting many of these changes.
+Thanks to @usmn-m in particular for heavily testing 1.2.0 and suggesting many of these changes, and to everyone else who tried it out and shared feedback.
 
 - New: an optional update check. Trimmer can ask GitHub for new versions when it opens, but only if
   you say yes: the installer asks (Allow update checks, or Local features only), and the portable
