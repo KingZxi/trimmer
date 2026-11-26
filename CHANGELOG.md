@@ -2,11 +2,15 @@
 
 ## 1.3.1 (not released yet)
 
-- New: organise compression presets in Settings > Compression. Move them up and down (or drag
-  them) to change the order the Clips, Replay merge and Queue lists show them in, rename them,
-  duplicate one to make a variation, and update one from the custom settings. Untick a preset to
-  hide it from those lists without deleting it; a clip or merge already using it keeps it. Hovering
-  over a preset shows its settings in one line.
+- New: organise compression presets in Settings > Compression, which now shows the custom
+  settings and the presets side by side. Drag presets to change the order the Clips, Replay merge
+  and Queue lists show them in, and untick one to hide it from those lists without deleting it (a
+  clip or merge already using it keeps it). Right-click a preset to rename it, duplicate it to
+  make a variation, update it from the custom settings or delete it; double-click loads it into
+  the custom settings. Hovering over a preset shows its settings in one line.
+- Queue: drag jobs to change the order they run in. The Move up and Move down buttons are gone
+  (they're still on the right-click menu, and Alt+Up / Alt+Down work), and Del removes the
+  selected jobs.
 - New: rescue a damaged recording. When a job fails because its output came out short (the
   original stops being readable partway, often after a crash or a bad spot on the drive, even
   though a player can jump past it), right-click it in the Queue and choose Rescue what can be

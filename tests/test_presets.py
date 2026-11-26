@@ -38,6 +38,11 @@ def answers(monkeypatch, names=(), yes=True):
     return asked
 
 
+def menu(d):
+    """The presets list's right-click menu, as {text: action} (the key hint left off)."""
+    return {a.text().split("\t")[0]: a for a in d._preset_menu().actions() if a.text()}
+
+
 def combo_items(combo):
     return [combo.itemText(i) for i in range(combo.count())]
 
@@ -73,17 +78,18 @@ def test_organise_presets_in_settings(monkeypatch):
     start = listed(d)
     assert start == list(default_presets())
     assert all(d.plist.item(i).checkState() == Qt.Checked for i in range(d.plist.count()))
-    assert not d.b_rename.isEnabled()                               # nothing picked yet
+    assert not menu(d)["Rename…"].isEnabled() and not d.b_load.isEnabled()  # nothing picked yet
+    assert menu(d)["Save custom as preset…"].isEnabled()
     asked = answers(monkeypatch, ["Mine", "My balanced", "Mine", CUSTOM_PRESET, "Other"])
 
-    # Move: buttons, and the ends stop.
+    # Move: from the right-click menu, and the ends stop.
     pick(d, BALANCED)
-    d.b_up.click()
+    menu(d)["Move up"].trigger()
     assert listed(d).index(BALANCED) == start.index(BALANCED) - 1 and d._current_preset() == BALANCED
     pick(d, start[0])
-    assert not d.b_up.isEnabled() and d.b_down.isEnabled()
+    assert not menu(d)["Move up"].isEnabled() and menu(d)["Move down"].isEnabled()
     pick(d, start[-1])
-    assert not d.b_down.isEnabled()
+    assert not menu(d)["Move down"].isEnabled()
 
     # Save as a new preset: goes at the end and is picked.
     d.enc.set_settings(EncodeSettings(codec="h264", quality=30))
@@ -117,12 +123,19 @@ def test_organise_presets_in_settings(monkeypatch):
     d._update_preset()
     assert "Replace the settings of \"Other\"" in asked[-1] and d.presets["Other"]["quality"] == 40
 
-    # Untick: hidden from the lists, kept in Settings.
+    # Untick: hidden from the lists, kept in Settings. The menu's tick does the same.
     d.plist.item(listed(d).index(DISCORD)).setCheckState(Qt.Unchecked)
+    assert DISCORD in d.hidden
+    pick(d, DISCORD)
+    shown = menu(d)["Show in the Compress lists"]
+    assert not shown.isChecked()
+    shown.trigger()
+    assert DISCORD not in d.hidden
+    menu(d)["Show in the Compress lists"].trigger()
     assert DISCORD in d.hidden
     # Delete picks the next one.
     pick(d, "Other (copy 2)")
-    d.b_del.click()
+    menu(d)["Delete"].trigger()
     assert "Other (copy 2)" not in listed(d) and d._current_preset() == "Other (copy)"
 
     d._save()
@@ -226,3 +239,30 @@ def test_renaming_a_preset_follows_into_clips_and_merges(monkeypatch):
     assert isinstance(e, ClipEntry)
     tab.clear()
     w.close()
+
+
+def test_preset_keys(monkeypatch):
+    from PySide6.QtTest import QTest
+    d = SD.SettingsDialog(AppSettings(), ["software"])
+    d.tabs.setCurrentIndex(1)
+    d.show()
+    d.activateWindow()
+    QTest.qWaitForWindowActive(d)
+    answers(monkeypatch, ["Keyed"])
+    pick(d, BALANCED)
+    d.plist.setFocus()
+    where = listed(d).index(BALANCED)
+    QTest.keyClick(d.plist, Qt.Key_Up, Qt.AltModifier)
+    assert listed(d).index(BALANCED) == where - 1
+    QTest.keyClick(d.plist, Qt.Key_D, Qt.ControlModifier)
+    assert listed(d)[where] == BALANCED + " (copy)"
+    QTest.keyClick(d.plist, Qt.Key_F2)
+    assert listed(d)[where] == "Keyed"
+    QTest.keyClick(d.plist, Qt.Key_Delete)
+    assert "Keyed" not in listed(d)
+    d.enc.set_settings(EncodeSettings(codec="h264", quality=40))
+    pick(d, BALANCED)
+    QTest.keyClick(d.plist, Qt.Key_Return)
+    assert d.enc.settings().to_dict() == EncodeSettings.from_dict(d.presets[BALANCED]).to_dict()
+    assert d.isVisible()                                            # Enter loaded it, didn't close Settings
+    d.close()

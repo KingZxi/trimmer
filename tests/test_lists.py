@@ -298,3 +298,38 @@ def test_failed_damaged_job_offers_rescue(monkeypatch):
     assert short.status == "queued" and short.job.options.rescue
     assert other.status == "failed" and not other.job.options.rescue
     w.close()
+
+
+def test_queue_jobs_drag_to_reorder():
+    from PySide6.QtCore import QItemSelectionModel, QMimeData, QPointF
+    from PySide6.QtGui import QDropEvent
+    w = window(WORK / "out_queue_drag")
+    q = w.queue
+    clip = str(gameplay_clip())
+    q.add_jobs([ClipJob(clip, segments=[(0, 2)], output_name=n, options=JobOptions(output_dir=str(WORK)))
+                for n in ("A", "B", "C", "D")], start=False)
+    titles = lambda: [i.job.title for i in q.items]  # noqa: E731
+    assert q.table.dragEnabled()
+    assert not any(b.text() in ("Move up", "Move down") for b in q.findChildren(QPushButton))
+
+    # Dropped on the lower half of a row: after it. Several jobs keep their order.
+    q.table.selectRow(0)
+    r = q.table.visualRect(q.table.model().index(2, 0))
+    drop = QDropEvent(QPointF(10, r.bottom() - 2), Qt.MoveAction, QMimeData(), Qt.LeftButton, Qt.NoModifier)
+    q.table.dropEvent(drop)
+    assert titles() == ["B", "C", "A", "D"]
+    assert drop.isAccepted() and drop.dropAction() == Qt.IgnoreAction   # Qt doesn't remove the rows itself
+    assert [q.table.item(r, queue_tab.C_NAME).text() for r in range(4)] == titles()
+    assert [i.job.title for i in q._selected()] == ["A"]               # still selected
+    q.table.clearSelection()
+    for row in (0, 3):
+        q.table.selectionModel().select(q.table.model().index(row, 0),
+                                        QItemSelectionModel.Select | QItemSelectionModel.Rows)
+    q.move_to(2)                                                       # in front of A
+    assert titles() == ["C", "B", "D", "A"]
+    q.table.selectRow(0)
+    q.move_to(q.table.drop_row(10_000))                                # below the last row: the end
+    assert titles() == ["B", "D", "A", "C"]
+    q.items.clear()
+    q._rebuild()
+    w.close()

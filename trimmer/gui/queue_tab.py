@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QGuiApplication, QTextCursor
+from PySide6.QtGui import QDesktopServices, QGuiApplication, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFrame, QHeaderView,
                                QInputDialog, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
                                QSplitter, QTableWidgetItem, QVBoxLayout, QWidget)
@@ -33,6 +33,31 @@ RESCUE_TIP = ("Run the job again, skipping the parts of the original that can't 
               "jump past them too). The outputs are named \"(rescued)\", the original is kept, and the job "
               "says which part was left out.")
 RESCUE_HINT = "Right-click the job and choose \"Rescue what can be read\" to also save what comes after the damage."
+
+
+class QueueTable(HintTable):
+    """The queue's table: selected jobs can be dragged to another place in it."""
+    dropped_at = Signal(int)            # the row the dragged jobs go in front of
+
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.InternalMove)   # only its own rows; files go to the window
+        self.setDragDropOverwriteMode(False)
+        self.setDropIndicatorShown(True)
+
+    def drop_row(self, y: int) -> int:
+        r = self.rowAt(y)
+        if r < 0:
+            return self.rowCount()
+        return r + 1 if y > self.visualRect(self.model().index(r, 0)).center().y() else r
+
+    def dropEvent(self, e):
+        self.dropped_at.emit(self.drop_row(int(e.position().y())))
+        e.setDropAction(Qt.IgnoreAction)    # the tab redraws the rows: Qt mustn't also remove the dragged ones
+        e.accept()
+        self.setState(QAbstractItemView.NoState)
+        self.viewport().update()
 
 
 def can_rescue(item) -> bool:
@@ -104,10 +129,6 @@ class QueueTab(QWidget):
         self.auto_start.setToolTip("When off, added jobs wait here until you press Start")
         self.auto_start.setChecked(bool(ui.get("auto_start_queue", True)))
         self.auto_start.toggled.connect(lambda on: self._save_ui("auto_start_queue", bool(on)))
-        b_up = set_kind(QPushButton("Move up"), "ghost")
-        b_up.clicked.connect(lambda: self.move(-1))
-        b_down = set_kind(QPushButton("Move down"), "ghost")
-        b_down.clicked.connect(lambda: self.move(1))
         self.b_retry = set_kind(QPushButton("Retry"), "ghost")
         self.b_retry.clicked.connect(lambda: self.retry())
         b_rm = set_kind(QPushButton("Remove"), "ghost")
@@ -115,11 +136,17 @@ class QueueTab(QWidget):
         b_clear = set_kind(QPushButton("Clear finished"), "ghost")
         b_clear.clicked.connect(self.clear_finished)
         lay.addWidget(hbox(self.b_start, self.b_pause, self.b_cancel, self.b_stop, self.pause_after,
-                           self.auto_start, "stretch", b_up, b_down, self.b_retry, b_rm, b_clear,
+                           self.auto_start, "stretch", self.b_retry, b_rm, b_clear,
                            stretch_end=False))
 
         split = QSplitter(Qt.Vertical)
-        self.table = HintTable(0, len(COLS))
+        self.table = QueueTable(0, len(COLS))
+        self.table.dropped_at.connect(self.move_to)
+        for key, fn in (("Alt+Up", lambda: self.move(-1)), ("Alt+Down", lambda: self.move(1)),
+                        ("Delete", lambda: self.remove_selected())):
+            sc = QShortcut(QKeySequence(key), self.table)
+            sc.setContext(Qt.WidgetShortcut)
+            sc.activated.connect(fn)
         self.table.set_hint("Nothing queued", "Jobs you add from Clips or Replay merge show up here")
         self.table.setHorizontalHeaderLabels(COLS)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -154,8 +181,8 @@ class QueueTab(QWidget):
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setFrameShape(QFrame.NoFrame)
-        self.log.setPlaceholderText("Select a job to see what it did. Right-click jobs for more options; "
-                                    "double-click a name or folder to change it.")
+        self.log.setPlaceholderText("Select a job to see what it did. Drag jobs to change the order they run in, "
+                                    "right-click them for more, or double-click a name or folder to change it.")
         split.addWidget(self.log)
         split.setSizes([340, 170])
         lay.addWidget(split, 1)
@@ -330,6 +357,7 @@ class QueueTab(QWidget):
     def _cell(self, r, c, text, tip=None, muted=False):
         it = QTableWidgetItem(text)
         it.setToolTip(tip if tip is not None else text)
+        it.setFlags(it.flags() & ~Qt.ItemIsDropEnabled)      # a dragged job goes between rows, not onto one
         if muted:
             it.setForeground(self.palette().placeholderText())
         self.table.setItem(r, c, it)
@@ -880,6 +908,22 @@ class QueueTab(QWidget):
         self._rebuild(ids)
         self._persist()
 
+    def move_to(self, row):
+        """Put the selected jobs, in their order, in front of the job now at `row` (a drag)."""
+        sel = self._selected()
+        if not sel:
+            return
+        ids = {i.id for i in sel}
+        rest = [i for i in self.items if i.id not in ids]
+        at = sum(1 for i in self.items[:row] if i.id not in ids)
+        order = rest[:at] + sel + rest[at:]
+        if [i.id for i in order] == [i.id for i in self.items]:
+            return
+        self.items[:] = order
+        self.sorter.clear()               # moved by hand
+        self._rebuild(ids)
+        self._persist()
+
     def retry(self, items=None):
         items = [i for i in (items if items is not None else self._selected())
                  if i.status in ("failed", "cancelled", "skipped")]
@@ -951,8 +995,8 @@ class QueueTab(QWidget):
             dele.addAction("No, keep it", lambda: self.set_delete(waiting, False))
             m.addSeparator()
             m.addAction("Move to top", lambda: self.move(-1, to_end=True))
-            m.addAction("Move up", lambda: self.move(-1))
-            m.addAction("Move down", lambda: self.move(1))
+            m.addAction("Move up\tAlt+Up", lambda: self.move(-1))
+            m.addAction("Move down\tAlt+Down", lambda: self.move(1))
             m.addAction("Move to bottom", lambda: self.move(1, to_end=True))
         if any(i.status in ("failed", "cancelled", "skipped") for i in sel):
             m.addSeparator()
@@ -978,7 +1022,7 @@ class QueueTab(QWidget):
                         lambda: show_in_folder(self, src))
         if any(i.status != "running" for i in sel):
             m.addSeparator()
-            m.addAction("Remove from queue", lambda: self.remove_selected(sel))
+            m.addAction("Remove from queue\tDel", lambda: self.remove_selected(sel))
         m.exec(self.table.viewport().mapToGlobal(pos))
 
     # ------------------------------------------------------------- opening

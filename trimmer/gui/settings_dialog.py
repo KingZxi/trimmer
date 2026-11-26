@@ -3,10 +3,10 @@
 from datetime import date
 
 from PySide6.QtCore import QDate, Qt, QTimer
-from PySide6.QtGui import QKeySequence
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDateEdit, QDialogButtonBox, QDoubleSpinBox, QFrame,
-                               QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QKeySequenceEdit, QLabel, QLineEdit,
-                               QListWidget, QListWidgetItem, QSpinBox, QAbstractItemView,
+                               QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QKeySequenceEdit, QLabel, QLineEdit,
+                               QListWidget, QListWidgetItem, QMenu, QSpinBox, QAbstractItemView,
                                QMessageBox, QPushButton, QScrollArea, QSizePolicy, QTabWidget, QTextBrowser, QToolButton,
                                QVBoxLayout, QWidget)
 
@@ -427,54 +427,109 @@ class SettingsDialog(QDialog):
 
     # --------------------------------------------------------- compression
     def _compression(self):
+        """Custom settings on the left, presets on the right: the buttons between them only move
+        settings across (save as preset, load into custom); the rest is on the list's right-click."""
         w = QWidget()
-        lay = QVBoxLayout(w)
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(22)
+
+        left = QVBoxLayout()
         self.b_enc_default = set_kind(QPushButton("↺ Restore default"), "ghost")
         self.b_enc_default.setToolTip("Put the custom compression settings back to the defaults (H.265, CRF 23)")
+        keep = self.b_enc_default.sizePolicy()
+        keep.setRetainSizeWhenHidden(True)          # so the two headings line up either way
+        self.b_enc_default.setSizePolicy(keep)
         self.b_enc_default.hide()
-        lay.addWidget(hbox(QLabel("Custom settings (used when 'Custom (Settings)' is picked):"), "stretch",
-                           self.b_enc_default, stretch_end=False))
+        left.addWidget(hbox(label("Custom settings", "h2"), "stretch", self.b_enc_default, stretch_end=False))
+        left.addWidget(label("Used when \u201cCustom (Settings)\u201d is picked.", "muted"))
         self.enc = EncodeForm(self.encoders)
         self.enc.set_settings(self.s.encode_settings())
-        lay.addWidget(self.enc)
-        lay.addWidget(label("Saved presets. Ticked ones are offered in the Clips, Replay merge and Queue "
-                            "compression lists, in this order (drag to reorder):", wrap=True))
+        left.addWidget(self.enc)
+        left.addStretch(1)
+        lay.addLayout(left, 3)
+
+        right = QVBoxLayout()
+        b_reset = set_kind(QPushButton("Restore defaults"), "ghost")
+        b_reset.setToolTip("Put back the built-in presets (your own are removed)")
+        b_reset.clicked.connect(self._reset_presets)
+        right.addWidget(hbox(label("Presets", "h2"), "stretch", b_reset, stretch_end=False))
+        right.addWidget(label("Ticked ones are offered in the Compress lists, in this order. Drag to reorder, "
+                              "double-click to load one into the custom settings, right-click for more.",
+                              "muted", wrap=True))
         self.presets = dict(self.s.presets)
         self.hidden = set(self.s.hidden_presets)
         self.renamed = {}                   # {name when the dialog opened: name now}
         self.plist = QListWidget()
         self.plist.setDragDropMode(QAbstractItemView.InternalMove)
         self.plist.setDefaultDropAction(Qt.MoveAction)
-        self.plist.setMinimumHeight(150)
+        self.plist.setMinimumHeight(220)
         self.plist.itemChanged.connect(self._preset_ticked)
         self.plist.currentRowChanged.connect(self._preset_buttons)
         self.plist.itemDoubleClicked.connect(lambda _: self._load_preset())
         self.plist.model().rowsMoved.connect(self._preset_order_from_list)
-        lay.addWidget(self.plist, 1)
+        self.plist.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.plist.customContextMenuRequested.connect(
+            lambda pos: self._preset_menu().exec(self.plist.viewport().mapToGlobal(pos)))
+        for key, fn in (("F2", self._rename_preset), ("Ctrl+D", self._dup_preset), ("Delete", self._del_preset),
+                        ("Return", self._load_preset), ("Alt+Up", lambda: self._move_preset(-1)),
+                        ("Alt+Down", lambda: self._move_preset(1))):
+            sc = QShortcut(QKeySequence(key), self.plist)
+            sc.setContext(Qt.WidgetShortcut)
+            sc.activated.connect(fn)
+        right.addWidget(self.plist, 1)
 
         def btn(text, tip, fn):
             b = QPushButton(text)
             b.setToolTip(tip)
             b.clicked.connect(fn)
             return b
-        b_save = btn("Save custom as preset…", "Save the custom settings above as a new preset", self._save_preset)
-        self.b_update = btn("Update from custom", "Replace the selected preset's settings with the custom "
-                            "settings above", self._update_preset)
+        self.b_save = btn("Save custom as preset…", "Save the custom settings as a new preset", self._save_preset)
         self.b_load = btn("Load into custom", "Copy the selected preset's settings into the custom settings "
-                          "above (or double-click it)", self._load_preset)
-        self.b_rename = btn("Rename…", "Rename the selected preset. Clips and merges that use it keep it",
-                            self._rename_preset)
-        self.b_dup = btn("Duplicate", "Make a copy of the selected preset, to change one setting", self._dup_preset)
-        self.b_up = btn("Move up", "Move the selected preset up the lists", lambda: self._move_preset(-1))
-        self.b_down = btn("Move down", "Move the selected preset down the lists", lambda: self._move_preset(1))
-        self.b_del = btn("Delete", "Delete the selected preset. Untick it instead to only hide it from the lists",
-                         self._del_preset)
-        b_reset = btn("Restore defaults", "Put back the built-in presets (your own are removed)",
-                      self._reset_presets)
-        lay.addWidget(hbox(b_save, self.b_update, self.b_load, self.b_rename, self.b_dup))
-        lay.addWidget(hbox(self.b_up, self.b_down, self.b_del, b_reset))
+                          "(or double-click it)", self._load_preset)
+        self.b_update = btn("Update from custom", "Replace the selected preset's settings with the custom "
+                            "settings", self._update_preset)
+        buttons = QGridLayout()
+        buttons.setSpacing(8)
+        buttons.addWidget(self.b_save, 0, 0, 1, 2)
+        buttons.addWidget(self.b_load, 1, 0)
+        buttons.addWidget(self.b_update, 1, 1)
+        right.addLayout(buttons)
+        lay.addLayout(right, 2)
         self._refresh_presets()
         return w
+
+    def _preset_menu(self) -> QMenu:
+        """The presets list's right-click menu (also what its keys do)."""
+        m = QMenu(self)
+        name = self._current_preset()
+        row, n = self.plist.currentRow(), self.plist.count()
+
+        def add(text, fn, enabled=True, key=None):
+            act = m.addAction(text + (f"\t{key}" if key else ""), fn)
+            act.setEnabled(enabled)
+            return act
+        add("Load into custom", self._load_preset, bool(name), "Enter")
+        add("Update from custom…", self._update_preset, bool(name))
+        m.addSeparator()
+        add("Rename…", self._rename_preset, bool(name), "F2")
+        add("Duplicate", self._dup_preset, bool(name), "Ctrl+D")
+        show = add("Show in the Compress lists", lambda: self._toggle_shown(name), bool(name))
+        show.setCheckable(True)
+        show.setChecked(bool(name) and name not in self.hidden)
+        m.addSeparator()
+        add("Move up", lambda: self._move_preset(-1), row > 0, "Alt+Up")
+        add("Move down", lambda: self._move_preset(1), 0 <= row < n - 1, "Alt+Down")
+        m.addSeparator()
+        add("Delete", self._del_preset, bool(name), "Del")
+        m.addSeparator()
+        add("Save custom as preset…", self._save_preset)
+        return m
+
+    def _toggle_shown(self, name):
+        it = self.plist.currentItem()
+        if it is not None and it.text() == name:
+            it.setCheckState(Qt.Checked if name in self.hidden else Qt.Unchecked)
 
     # The list widget is the order and the ticks; self.presets the settings, kept in the same order.
     def _current_preset(self):
@@ -482,11 +537,8 @@ class SettingsDialog(QDialog):
         return it.text() if it is not None else None
 
     def _preset_buttons(self, *_):
-        row, n = self.plist.currentRow(), self.plist.count()
-        for b in (self.b_update, self.b_load, self.b_rename, self.b_dup, self.b_del):
-            b.setEnabled(row >= 0)
-        self.b_up.setEnabled(row > 0)
-        self.b_down.setEnabled(0 <= row < n - 1)
+        for b in (self.b_update, self.b_load):
+            b.setEnabled(self.plist.currentRow() >= 0)
 
     def _preset_ticked(self, it):
         (self.hidden.discard if it.checkState() == Qt.Checked else self.hidden.add)(it.text())
