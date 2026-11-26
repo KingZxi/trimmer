@@ -265,3 +265,36 @@ def test_column_dividers_are_easy_to_drag():
     assert all(w.queue.table.horizontalHeader().sectionResizeMode(c) == QHeaderView.Interactive
                for c in range(len(queue_tab.COLS)))              # Settings no longer stuck stretching
     w.close()
+
+
+def test_failed_damaged_job_offers_rescue(monkeypatch):
+    from trimmer.core.jobs import JobResult
+    w = window(WORK / "out_rescue_menu")
+    q = w.queue
+    q.add_jobs([ClipJob(str(WORK / f"{n}.mp4"), segments=[(0, 5)], output_name=n,
+                        options=JobOptions(output_dir=str(WORK))) for n in ("Short", "Other")], start=False)
+    short, other = q.items
+    for it, msg in ((short, "Output failed verification: output is 1391.1s long but 3318.6s was expected. "
+                             "The source is probably damaged after 23:11"), (other, "Saving failed: disk full")):
+        it.status, it.result = "failed", JobResult(status="failed", messages=[msg])
+        q._row(it)
+    assert queue_tab.can_rescue(short) and not queue_tab.can_rescue(other)
+    assert "Rescue what can be read" in q.table.item(0, queue_tab.C_DETAIL).toolTip()
+    seen = []
+
+    class Menu(queue_tab.QMenu):
+        def exec(self, *a):
+            seen.extend(x.text() for x in self.actions())
+    monkeypatch.setattr(queue_tab, "QMenu", Menu)
+    q.table.selectRow(1)
+    q._menu(q.table.rect().center())
+    assert "Retry" in seen and "Rescue what can be read" not in seen
+    seen.clear()
+    q.table.selectRow(0)
+    q._menu(q.table.rect().center())
+    assert "Rescue what can be read" in seen
+    q.auto_start.setChecked(False)
+    q.rescue([short, other])
+    assert short.status == "queued" and short.job.options.rescue
+    assert other.status == "failed" and not other.job.options.rescue
+    w.close()

@@ -29,6 +29,20 @@ from .worker import QueueItem, QueueRunner, Task
 
 STATUS_TEXT = {"queued": "Waiting", "running": "Working", "done": "Done", "reverted": "Kept original",
                "failed": "Failed", "skipped": "Skipped", "cancelled": "Cancelled"}
+RESCUE_TIP = ("Run the job again, skipping the parts of the original that can't be read (a player can often "
+              "jump past them too). The outputs are named \"(rescued)\", the original is kept, and the job "
+              "says which part was left out.")
+RESCUE_HINT = "Right-click the job and choose \"Rescue what can be read\" to also save what comes after the damage."
+
+
+def can_rescue(item) -> bool:
+    """A failed clip job whose source looked damaged (it came out short), not already rescued."""
+    res = item.result
+    return (item.status == "failed" and getattr(item.job, "kind", "") == "clip"
+            and not item.job.options.rescue and res is not None
+            and any("probably damaged" in m or "s was expected" in m for m in res.messages))
+
+
 COLS = ["Job", "Saves to", "Settings", "Status", "Progress", "Details", "Size", "Delete original"]
 C_NAME, C_DEST, C_SET, C_STATUS, C_BAR, C_DETAIL, C_SIZE, C_DEL = range(len(COLS))
 SORTABLE = (C_NAME, C_DEST, C_SET, C_DETAIL, C_SIZE)
@@ -376,7 +390,8 @@ class QueueTab(QWidget):
         if item.status == "queued" and item.analysis:
             return item.analysis, None
         if res is not None and res.messages and item.status in ("failed", "skipped"):
-            return res.messages[0].splitlines()[0][:160], None
+            tip = (res.messages[0] + "\n\n" + RESCUE_HINT) if can_rescue(item) else None
+            return res.messages[0].splitlines()[0][:160], tip
         if res is not None and item.status in ("done", "reverted") and gap_note(res):
             return gap_note(res)[:160], "\n".join(res.warnings) if res.warnings else None
         return "", None
@@ -880,6 +895,13 @@ class QueueTab(QWidget):
                 self.start()
         self._buttons()
 
+    def rescue(self, items):
+        """Run failed clip jobs again, leaving out the parts of the original that can't be read."""
+        items = [i for i in items if can_rescue(i)]
+        for it in items:
+            it.job.options.rescue = True
+        self.retry(items)
+
     def remove_selected(self, items=None):
         items = [i for i in (items if items is not None else self._selected()) if i.status != "running"]
         if not items:
@@ -935,6 +957,11 @@ class QueueTab(QWidget):
         if any(i.status in ("failed", "cancelled", "skipped") for i in sel):
             m.addSeparator()
             m.addAction("Retry", lambda: self.retry(sel))
+            damaged = [i for i in sel if can_rescue(i)]
+            if damaged:
+                act = m.addAction("Rescue what can be read", lambda: self.rescue(damaged))
+                act.setToolTip(RESCUE_TIP)
+                m.setToolTipsVisible(True)
         outs = [Path(p) for i in sel if i.result is not None for p in i.result.outputs]
         m.addSeparator()
         if outs:

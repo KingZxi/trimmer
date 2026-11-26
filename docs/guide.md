@@ -165,6 +165,16 @@ replay sessions with their ticks and custom names, and the waiting jobs
 "Remember my choice" or set **On close** in Settings to stop being asked.
 Files that have moved are skipped and listed.
 
+### Damaged recordings
+
+If a recording can't be read past some point (after a crash, or a bad spot on the drive), a
+trim or compression of it comes out short and the job fails, keeping what it saved before the
+damage as a "(partial, first ...)" file. Often the rest of the recording is still there: a
+player can jump past the bad spot. Right-click the failed job and choose **Rescue what can be
+read**: Trimmer finds every part it can still read, leaves out only the damaged part, and runs
+the job again on the rest. The outputs are named "(rescued)", the job's details say which part
+was left out, and the original is never deleted.
+
 ## Tags and warnings
 
 Every video and audio file Trimmer saves carries a hidden note in its

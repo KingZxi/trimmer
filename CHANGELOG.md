@@ -7,6 +7,12 @@
   duplicate one to make a variation, and update one from the custom settings. Untick a preset to
   hide it from those lists without deleting it; a clip or merge already using it keeps it. Hovering
   over a preset shows its settings in one line.
+- New: rescue a damaged recording. When a job fails because its output came out short (the
+  original stops being readable partway, often after a crash or a bad spot on the drive, even
+  though a player can jump past it), right-click it in the Queue and choose Rescue what can be
+  read. Trimmer finds every part of the original it can still read, skips only the damaged part,
+  and runs the job on the rest. The outputs are named "(rescued)", the job says which part was
+  left out, and the original is kept.
 - Saving a preset under a name that's already taken now asks before replacing it, instead of
   replacing it straight away.
 - Renaming a preset carries over to the clips and merges that use it.

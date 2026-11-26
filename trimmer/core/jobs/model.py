@@ -46,6 +46,7 @@ class JobOptions:
     generate_clip_log: bool = False
     use_packet_matching: bool = True
     add_quality_label: bool = True       # "(LOSSY), (CRF23, H265, medium)" in compressed names
+    rescue: bool = False                 # damaged source: skip what can't be read (queue's right-click)
 
     @classmethod
     def from_settings(cls, s) -> "JobOptions":

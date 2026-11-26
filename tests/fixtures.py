@@ -257,3 +257,25 @@ def cut_off_clip(folder: Path) -> Path:
     p.write_bytes(data[: len(data) * 3 // 4])
     full.unlink()
     return p
+
+
+def unreadable_middle_clip(folder: Path) -> Path:
+    """An .mp4 that can't be read past about 7 s, but can again from about 10 s (one chunk of the
+    file points nowhere, as after a bad sector): ffmpeg stops there, a player jumps past it."""
+    import struct
+    folder.mkdir(parents=True, exist_ok=True)
+    p = folder / "Unreadable middle.mp4"
+    if p.exists():
+        return p
+    good = folder / "good.mp4"
+    run("-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=20", "-f", "lavfi", "-i", "sine=f=440:r=48000:d=20",
+        "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "veryfast", "-g", "30",
+        "-c:a", "aac", "-b:a", "128k", str(good))
+    data = bytearray(good.read_bytes())
+    good.unlink()
+    i = data.find(b"stco")                     # the video's chunk offsets
+    n = struct.unpack(">I", data[i + 8:i + 12])[0]
+    k = i + 12 + 4 * (n * 8 // 20)             # the chunk at about 8 s
+    data[k:k + 4] = struct.pack(">I", 0x7FFFFFF0)
+    p.write_bytes(data)
+    return p

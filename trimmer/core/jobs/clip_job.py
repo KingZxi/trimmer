@@ -1,18 +1,21 @@
 """Clip jobs: one source file, optionally trimmed, compressed, with chosen or mixed audio
 tracks, and optional audio and video-only rips."""
 
+import os
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from typing import List, Optional
 
 from .. import ffmpeg as ff
+from .. import rescue as rescue_
 from ..encode import EncodeSettings, can_copy_audio, resolve_quality
 from ..ffmpeg import FFmpegError
 from ..render import (EPS, AudioPlan, Span, output_ext, render, rip_audio, rip_extension, snap_spans_to_keyframes,
                       verify_output)
 from ..smartcut import SmartCutError, smart_render
 from ..tag import build_tag, describe_encode
-from ..util import VIDEO_EXTENSIONS, format_hms_ms, safe_unlink, sanitize_filename
+from ..util import VIDEO_EXTENSIONS, format_hms, format_hms_ms, safe_unlink, sanitize_filename
 from .checks import _note_source_gaps, _span_windows, check_copy_trim
 from .model import EXACT_SETTINGS, NOT_COMPRESSED, VIDEO_ONLY, ClipJob, JobContext, JobOptions, JobResult, _Skip
 from .output import (_check_space, _claim, _delete_sources, _finish, _keep_note, _keep_smaller, _out_dir, _part,
@@ -248,7 +251,76 @@ def _write_rip(ctx: JobContext, opts: JobOptions, spans: List[Span], t: int, nam
                  date_source=date_source, what=f"Track {t + 1}", failed=f"Ripping audio track {t + 1} failed")
 
 
+RESCUE_FOLDER = "Trimmer rescue (temporary)"
+
+
+def _lost_text(lost) -> str:
+    parts = [f"{format_hms(a)} to the end" if i == len(lost) - 1 and b is None else f"{format_hms(a)}-{format_hms(b)}"
+             for i, (a, b) in enumerate(lost)]
+    return ", ".join(parts)
+
+
+def _run_rescued(job: ClipJob, ctx: JobContext) -> JobResult:
+    """The job, on a copy of its source that leaves out what can't be read (see core/rescue.py).
+    The copy is made next to the outputs, used, and deleted; the original is never deleted."""
+    src = Path(job.source)
+    if not src.exists():
+        raise FFmpegError(f"{src.name} no longer exists.")
+    info = ff.probe(src, use_cache=False)
+    plain = replace(job, options=replace(job.options, rescue=False))
+
+    def step(text, fraction):
+        ctx.progress(text, ff.Progress(fraction, 0, None, None, None))
+    stretches = rescue_.readable_stretches(src, info, ctx.cancel, step)
+    if not rescue_.is_damaged(stretches, info.duration):
+        ctx.log("Rescue: every part of the original could be read, so it was saved as usual.")
+        return run_clip_job(plain, ctx)
+    pieces = rescue_.kept_pieces(stretches, info.duration)
+    lost = rescue_.lost_parts(stretches, info.duration)
+    ends = pieces[-1][1] is not None
+    lost_shown = [(a, None if ends and i == len(lost) - 1 else b) for i, (a, b) in enumerate(lost)]
+    note = (f"Rescued: {_lost_text(lost_shown)} of the original couldn't be read and was left out"
+            + (" (the recording ends there)" if ends else "") + "; everything else was saved.")
+    ctx.log(note)
+    segments = rescue_.map_segments(job.segments, pieces, info.duration) if job.segments else []
+    if job.segments and not segments:
+        raise FFmpegError("Rescue: none of the part you kept can be read. " + note.split(";")[0] + ".")
+    out_dir = _out_dir(job, src)
+    _check_space(out_dir, info.size * 2)
+    work = out_dir / RESCUE_FOLDER
+    work.mkdir(exist_ok=True)
+    rescued = work / f"{src.stem} (rescued).mkv"
+    try:
+        ctx.stage("Copying what can be read")
+        r = rescue_.write_rescued(src, pieces, info.duration, rescued, ctx.cancel, ctx.reporter("Copying what can be read"))
+        if not r.ok:
+            raise ff.failure("Rescue failed", r)
+        st = src.stat()
+        os.utime(rescued, (st.st_atime, st.st_mtime))       # the outputs keep the recording's date
+        opts = job.options
+        container = opts.container if opts.container in (".mp4", ".mkv") else (
+            ".mkv" if src.suffix.lower() == ".mkv" else ".mp4")
+        name = job.output_name.strip()
+        rescued_job = replace(job, source=str(rescued), segments=segments,
+                              output_name=f"{Path(name).stem if Path(name).suffix else name} (rescued)" if name else "",
+                              options=replace(opts, rescue=False, delete_originals=False,
+                                              output_dir=str(out_dir), container=container))
+        res = run_clip_job(rescued_job, ctx)
+    finally:
+        safe_unlink(rescued)
+        try:
+            work.rmdir()
+        except OSError:
+            pass
+    res.in_bytes = info.size
+    res.messages.insert(0, note)
+    ctx.warnings.append(note)
+    return res
+
+
 def run_clip_job(job: ClipJob, ctx: JobContext) -> JobResult:
+    if job.options.rescue:
+        return _run_rescued(job, ctx)
     res = JobResult()
     src = Path(job.source)
     if not src.exists():
